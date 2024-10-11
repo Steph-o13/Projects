@@ -1,6 +1,8 @@
 # Projects
-A collection of my projects, primarily done in Jupyter Lab, RStudio, and Pycharm.
+A collection of my projects, primarily done in Jupyter Lab, GCS, and RStudio.
 
-Current Projects:
-- Visualizing cryptocurrency data with a candlestick chart
+Old Projects:
+- Visualizing cryptocurrency data with a candlestick chartg
 - SQL analysis of datasets provided by the city of Chicago on the Chicago Census, Chicago Crime data, and Chicago School statistics.
+- FastText NLP model - cleaning messy transaction data
+- Data Analytics skill challenge for Penn Entertainment / Penn Interactive
