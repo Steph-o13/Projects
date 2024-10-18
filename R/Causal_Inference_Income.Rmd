@@ -1,0 +1,256 @@
+---
+title: "Causal Analysis"
+author: "Steph Low"
+date: "2024-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tableone)
+library(Matching)
+library(MatchIt)
+library(tidyverse)
+library(LaplacesDemon)
+```
+
+
+#### Goal: evaluate the impact of National Supported Work (NSW) Demonstration, which is a labor training program on post-intervention income levels. The interest is in estimating the causal effect of this training program on income.
+
+The Lalonde data set has 614 subjects and 10 variables: 
+
+- `age`: age in years
+- `educ`: years of schooling
+- `black`: indicator variable for blacks
+- `hispan`: indicator variable for Hispanics
+- `married`: indicator variable for marital status
+- `nodegree`: indicator variable for high school diploma
+- `re74`: real earnings in 1974
+- `re75`: real earnings in 1975
+- `re78`: real earnings in 1978 (the outcome variable; post-intervention income)
+- `treat`: indicator variable for treatment status
+
+Potential confounding variables are `age`, `educ`, `black`, `hispan`, `married`, `nodegree`, `re74`, and `re75`. 
+
+### Data Preparation
+
+First I need to prepare the data.
+
+```{r load data}
+# load data
+data(lalonde)
+
+# view data
+# View(lalonde)
+
+# convert indicator variables to numeric and prep data
+age <- lalonde$age
+educ <- lalonde$educ
+re74 <- lalonde$re74
+re75 <- lalonde$re75
+married <- lalonde$married
+nodegree <- lalonde$nodegree
+black <- as.numeric(lalonde$race=="black") # 1 for black, 0 otherwise
+hispan <- as.numeric(lalonde$race=="hispan") # 1 for hispanic, 0 otherwise
+treatment <- lalonde$treat
+outcome <- lalonde$re78
+
+# create a dataset with these variables for simplicity
+data <- cbind(age, educ, re74, re75, married, nodegree, black, hispan, treatment, outcome)
+data <- data.frame(data)
+
+# get covariates
+xvars <- c("age", "educ", "black", "hispan", "married", "nodegree", "re74", "re75")
+```
+
+### Unmatched Data 
+
+Now that the data is prepared, I want to find the standardized mean differences (SMD) for all the confounding variables prior to matching.
+
+
+```{r SMD pre-matching}
+# create Table1, pre-matching
+table1 <- CreateTableOne(vars=xvars             # covariates to be summarized
+                         , strata="treatment"   # stratifying the groups by treatment
+                         , data=data            
+                         , test=FALSE           # don't do groupwise comparisons
+                         )
+
+# include the standardized mean difference (SMD)
+print(table1, smd=TRUE)
+```
+Next I want to find the raw mean of real earnings in 1978 (outcome) for treated subjects minus the mean of real earnings in 1978 for untreated subjects.
+
+```{r outcome treatment vs control}
+# calculate means by treatment group
+raw_means <- aggregate(x=data$outcome
+                       , by = list(data$treatment)
+                       , FUN = mean)
+
+# calculate the difference between real earnings of the treated subjects minus the untreated subjects
+raw_means$x[raw_means$Group.1==1] - raw_means$x[raw_means$Group.1==0]
+
+```
+
+### Propensity Score Estimation
+
+Next I want to fit a propensity score model. I'll estimate the propensity score using logistic regression where the outcome is treatment, including the 8 confounding variables in the model as predictors, with no interaction terms or non-linear terms (such as squared terms).  
+
+The propensity score for each subject is the probability of receiving treatment given the covariates. 
+
+
+```{r propensity score model}
+# fit a propensity score model using logistic regression
+psmodel <- glm(treatment~age+educ+re74+re75+married+nodegree+black+hispan
+               , family=binomial()
+               , data=data
+               )
+
+# show model summary
+summary(psmodel)
+
+# estimate the propensity scores
+pscore <- psmodel$fitted.values
+
+# find the min and max estimated propensity scores
+min(pscore)
+max(pscore)
+```
+### Propensity Score Matching
+
+Next I want to match subjects on their propensity scores. 
+
+In this case I will pair match:
+
+- without replacement
+
+- without a maximum distance tolerated for matching (no caliper)
+
+- on the propensity score instead of the logit of the propensity score.
+
+Once the matching is done, I will find the standardized mean differences for the matched data. 
+
+```{R propensity matching}
+# set seed for reproducibility
+set.seed(931139)
+
+# match on propensity score
+psmatch <- Match(Tr=data$treatment     # treatment
+                 , M=1                 # pair matching
+                 , X=pscore            # variables to match on (estimated propensity scores)
+                 , replace=FALSE       # no replacement
+                 )
+
+# extracted the matched data
+matchedData <- data[unlist(psmatch[c("index.treated", "index.control")]),]
+
+# create Table1, post-matching
+matchedTable1 <- CreateTableOne(vars=xvars              # covariates to be summarized
+                                 , strata="treatment"   # stratifying the groups by treatment
+                                 , data=matchedData            
+                                 , test=FALSE           # don't do groupwise comparisons
+                                 )
+
+# get SMD
+print(matchedTable1, smd=TRUE)
+```
+
+
+Next I'll do the same propensity matching, but this time with a caliper of 0.1 to limit the maximum tolerated distance for matching.
+
+- a common caliper value is `caliper = 0.2 * SD(logit(propensityScore))`
+
+```{r caliper}
+# set seed for reproducibility
+set.seed(931139)
+
+# match on propensity score
+psmatch2 <- Match(Tr=data$treatment    # treatment
+                 , M=1                 # pair matching
+                 , X=pscore            # variables to match on (estimated propensity scores)
+                 , replace=FALSE       # no replacement
+                 , caliper=0.1
+                 )
+
+# extracted the matched data
+matchedData2 <- data[unlist(psmatch2[c("index.treated", "index.control")]),]
+
+# create Table1, post-matching
+matchedTable2 <- CreateTableOne(vars=xvars              # covariates to be summarized
+                                 , strata="treatment"   # stratifying the groups by treatment
+                                 , data=matchedData2            
+                                 , test=FALSE           # don't do groupwise comparisons
+                                 )
+
+# get SMD
+print(matchedTable2, smd=TRUE)
+```
+
+I'll again do some propensity matching, but this time with the logit of the propensity score and a caliper.
+
+```{r logit}
+# set seed for reproducibility
+set.seed(931139)
+
+# match on propensity score
+psmatch3 <- Match(Tr=data$treatment    # treatment
+                 , M=1                 # pair matching
+                 , X=logit(pscore)     # variables to match on (estimated propensity scores)
+                 , replace=FALSE       # no replacement
+                 , caliper=0.1
+                 )
+
+# extracted the matched data
+matchedData3 <- data[unlist(psmatch2[c("index.treated", "index.control")]),]
+
+# create Table1, post-matching
+matchedTable3 <- CreateTableOne(vars=xvars              # covariates to be summarized
+                                 , strata="treatment"   # stratifying the groups by treatment
+                                 , data=matchedData3            
+                                 , test=FALSE           # don't do groupwise comparisons
+                                 )
+
+# get SMD
+print(matchedTable3, smd=TRUE)
+```
+### Outcome Analysis
+
+Next I'll do the outcome analysis.
+
+
+```{r outcome analysis}
+# outcome analysis
+y_treatment <- matchedData2$outcome[matchedData2$treatment==1]
+y_control <- matchedData2$outcome[matchedData2$treatment==0]
+
+# pairwise difference
+diff <- y_treatment - y_control
+
+# mean of real earnings in 1978 for treated subjects minus control subjects
+mean(diff)
+
+# paired t test
+t.test(diff)
+
+# let's see how this all differs with the logit-matched data
+
+# outcome analysis
+y_treatment2 <- matchedData3$outcome[matchedData3$treatment==1]
+y_control2 <- matchedData3$outcome[matchedData3$treatment==0]
+
+# pairwise difference
+diff2 <- y_treatment2 - y_control2
+
+# mean of real earnings in 1978 for treated subjects minus control subjects
+mean(diff2)
+
+# paired t test
+t.test(diff2)
+
+```
+There wasn't a difference in the outcome based off the different matched sets I did.
+
+With a p-value of `0.1411`, I cannot reject the null hypothesis that there is no treatment effect. The NSW may not have had any impact on post-intervention income levels.
+
+For more reading on this this topic, check out this [example](https://cran.r-project.org/web/packages/tableone/vignettes/smd.html).
