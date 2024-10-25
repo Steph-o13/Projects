@@ -1,0 +1,133 @@
+---
+title: "Causal_Inference_IPTW"
+author: "Steph Low"
+date: "2024-10-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tableone)
+library(Matching)
+library(MatchIt)
+library(ipw)
+library(survey)
+```
+
+#### Goal: evaluate the impact of National Supported Work (NSW) Demonstration, which is a labor training program on post-intervention income levels. The interest is in estimating the causal effect of this training program on income using Inverse Probability Treatment Weighting
+
+The Lalonde data set has 614 subjects and 10 variables: 
+
+- `age`: age in years
+- `educ`: years of schooling
+- `black`: indicator variable for blacks
+- `hispan`: indicator variable for Hispanics
+- `married`: indicator variable for marital status
+- `nodegree`: indicator variable for high school diploma
+- `re74`: real earnings in 1974
+- `re75`: real earnings in 1975
+- `re78`: real earnings in 1978 (the outcome variable; post-intervention income)
+- `treat`: indicator variable for treatment status
+
+Potential confounding variables are `age`, `educ`, `black`, `hispan`, `married`, `nodegree`, `re74`, and `re75`. 
+
+### Data Preparation
+
+First I need to prepare the data.
+
+```{r load data}
+# load data
+data(lalonde)
+
+# view data
+# View(lalonde)
+
+# convert indicator variables to numeric and prep data
+age <- lalonde$age
+educ <- lalonde$educ
+re74 <- lalonde$re74
+re75 <- lalonde$re75
+married <- lalonde$married
+nodegree <- lalonde$nodegree
+black <- as.numeric(lalonde$race=="black") # 1 for black, 0 otherwise
+hispan <- as.numeric(lalonde$race=="hispan") # 1 for hispanic, 0 otherwise
+treatment <- lalonde$treat
+outcome <- lalonde$re78
+
+# create a dataset with these variables for simplicity
+data <- cbind(age, educ, re74, re75, married, nodegree, black, hispan, treatment, outcome)
+data <- data.frame(data)
+
+# get covariates
+xvars <- c("age", "educ", "black", "hispan", "married", "nodegree", "re74", "re75")
+```
+
+### Propensity Score Estimation
+
+Next I want to fit a propensity score model. I'll estimate the propensity score using logistic regression where the outcome is treatment, including the 8 confounding variables in the model as predictors, with no interaction terms or non-linear terms (such as squared terms).  Then I'll use the propensity scores to obtain the IPTW weights for each subject and create a Table One with SMD. In this case, since I'm working with weighted data, I will ignore the standard deviations of treated and control subjects, but the SMD is reliable. 
+
+```{r propensity score model}
+# fit a propensity score model using logistic regression
+psmodel <- glm(treatment~age+educ+re74+re75+married+nodegree+black+hispan
+               , family=binomial(link = "logit")
+               , data=data
+               )
+
+# show model summary
+summary(psmodel)
+
+# get the value of the propensity score for each subject
+ps <- predict(psmodel, type="response")
+
+# calculate the IPTW weights: 1/ps for treated, 1/(1-ps) for control
+weights <- ifelse(treatment==1,1/(ps), 1/(1-ps))
+
+# find the min and max weights
+min(weights)
+max(weights)
+
+# apply the weights to the data
+weighted_data<-svydesign(ids=~1, data=data, weights=~weights)
+
+# weighted table 1
+weightedtable1 <- svyCreateTableOne(vars=xvars
+                                    , strata = "treatment"
+                                    , data = weighted_data
+                                    , test = FALSE)
+
+# show weighted table with SMD
+print(weightedtable1, smd=TRUE)
+
+```
+### CI and Truncation
+
+Next I want use IPTW to find the estimate and 95% confidence interval for the average causal effect.  This can be done using a Marginal Structural Model, which is used to model average causal effects.  This confidence interval turns out to be (-1562, 2012).
+
+Then I want to truncate the weights at the 1st and 99th percentiles and see how that impacts the estimate and 95% confidence interval.
+
+```{r, CI}
+# fit a marginal structural model 
+msm = svyglm(outcome~treatment
+             , design = svydesign(~1, data=data, weights=~weights))
+
+# find the confidence interval
+confint(msm)
+
+# truncate at 1st and 99th percentiles
+truncated_model <- ipwpoint(exposure = treatment
+                                     , family = "binomial"
+                                     , link = "logit"
+                                     , denominator = ~age + educ + re74 + re75 + married + nodegree + black + hispan
+                                     , data=data
+                                     , trunc = 0.01
+                                     )
+summary(truncated_model$weights.trun)
+
+# add truncated weights to data
+data$weights <- truncated_model$weights.trunc
+
+# fit a MSM
+truncated_msm <- svyglm(outcome~treatment
+                        , design = svydesign(~1, data=data, weights=~weights) )
+```
