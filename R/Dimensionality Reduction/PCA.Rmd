@@ -1,0 +1,118 @@
+---
+title: "PCA - Dimensionality Reduction"
+output: html_document
+date: "Fall 2024"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#rm(list = ls()) # clear out old environmental variables
+```
+
+#### Using the crime data set, apply Principal Component Analysis and then create a regression model using the first few principal components. Specify your new model in terms of the original variables and compare its quality to your solution to 8.2.
+
+```{r load data}
+# load data
+crime_df <- read.table("uscrime.txt",  stringsAsFactors = FALSE, header = TRUE)
+head(crime_df, 5)
+```
+First I did a PCA using all of the predictors from the crime data set. According to the analysis, the first six components explain 89.996% of the variance (with the first component by itself expaining 40.13%!).  With less and less of the variance being explained by later components, I proceeded to do the regression analysis with the first six components. 
+
+```{r PCA}
+# PCA with all predictors
+crime_pca <- prcomp(x = crime_df[,1:15] 
+                    , scale = TRUE
+                    )
+summary(crime_pca)
+
+# graph the principal components by how much of the variance they explain
+screeplot(x = crime_pca
+          , npcs = 15
+          ,type = "lines")
+```
+The most positively and negatively correlated predictors for each of the six principal components are: 
+
+- PC1: `Wealth` | `Ineq`
+- PC2: `M.F`    | `Pop`
+- PC3: `LF`     | `U1`
+- PC4: `Prob`   | `Time`
+- PC5: `Prob`   | `M.F`
+- PC6: `LF`     | `M`
+
+```{r Regression}
+print(crime_pca)
+
+# combine the principal components with the crime data set
+pca_crime_df <- as.data.frame(
+                              cbind(crime_pca$x[,1:6]
+                                    , crime_df[,16]
+                                    )
+                             )
+head(pca_crime_df)
+
+# linear regression model with principal components
+lm_pca <- lm(formula = V7~.
+             , data = as.data.frame(pca_crime_df)
+               )
+
+summary(lm_pca)
+```
+PCA found the new dimension factors and regression found the coefficients of those factors, so I can interpret the new model in terms of the original factors by calculating the implied regression coefficient for the original factors. This is the sum of the coefficients multiplied by the eigenvectors of the transformed matrix.
+
+```{r Transformation}
+# calculate the implied regression coefficient
+intercept <- lm_pca$coefficients[1]
+b_vector <- lm_pca$coefficients[2:6]
+
+# matrix multiply the coefficients and the eigenvectors of the transformed matrix of data
+a_vector <- crime_pca$rotation[,1:5]%*%b_vector
+
+# get the original data set's alpha vector and coefficient vector 
+mean <- sapply(crime_df[,1:15], mean)
+sdv <- sapply(crime_df[,1:15], sd)
+orig_b_vector <- intercept - sum(a_vector*mean/sdv)
+orig_a_vector <- a_vector/sdv
+
+# calculate the implied regression coefficient for the original predictors
+implied_coefficients <- as.matrix(crime_df[,1:15]) %*% orig_a_vector+orig_b_vector
+
+# calculate evaluation metrics
+sse = sum((implied_coefficients- crime_df[,16])^2)
+total_sse = sum((crime_df[,16] - mean(crime_df[,16]))^2)
+rsquared <- 1 - sse/total_sse
+adj_rsquared <- rsquared-(1-rsquared)*6/(nrow(crime_df)-6-1)
+adj_rsquared
+
+```
+The model created with Principal Components ended up with an Adjusted R-squared value of 0.592. I compared that model performance to last week's model, which had an Adjusted R-Squared value of 0.7307. It seems like PCA didn't work quite as well as just limiting the data set only to significant predictors, but that may be due to the small size of the data set. I expect PCA would work comparably well with a larger data set.
+
+``` {r Comparison}
+# test city
+city <- data.frame(M = 14.0
+                   , So = 0
+                   , Ed = 10.0
+                   , Po1 = 12.0
+                   , Po2 = 15.5
+                   , LF = 0.640
+                   , M.F = 94.0
+                   , Pop = 150
+                   , NW = 1.1
+                   , U1 = 0.120
+                   , U2 = 3.6
+                   , Wealth = 3200
+                   , Ineq = 20.1
+                   , Prob = 0.04
+                   , Time = 39.0
+                   )
+
+# train  new model with only significant attributes
+new_lm_model <-  lm(formula = Crime ~ M+Ed+Po1+U2+Ineq+Prob
+               , data = crime_df
+               )
+summary(new_lm_model)
+
+# predict the crime rate for the city using the model trained on significant attributes
+crime_preds_new_lm_model <- predict(new_lm_model, city)
+crime_preds_new_lm_model 
+```
