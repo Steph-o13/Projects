@@ -1,0 +1,87 @@
+---
+title: "Kmeans Clustering"
+classoption: landscape
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.pos = "!h")
+library(kernlab)    # SVM
+library(kknn)       # KNN
+library(factoextra) # elbow method
+```
+
+
+```{r load data}
+iris <- read.table("iris.txt")
+```
+
+
+```{r iris clustering}
+set.seed(42)                 # set seed for reproducibility of results
+
+iris$Species = as.factor(iris$Species) # change Species column from character to factor datatype
+
+unlabeled_df <- iris[,1:4]   # get unlabeled data
+
+# plot the data
+pairs(iris[,1:4]
+      , col = iris$Species)
+
+# how do different predictors perform?
+get_twcss <- function(z) {
+              kmeans(x=z
+             , centers=3
+             , iter.max=20)$tot.withinss # get the total within cluster sum of squares 
+}
+
+feature_comparison <- vector()
+# let's compare all the predictors by themselves
+feature_comparison[0] <- get_twcss(iris[,1])
+feature_comparison[1] <- get_twcss(iris[,2])
+feature_comparison[2] <- get_twcss(iris[,3])
+feature_comparison[3] <- get_twcss(iris[,4])
+# and all the pairs of predictors
+feature_comparison[4] <- get_twcss(iris[,c(1,2)])
+feature_comparison[5] <- get_twcss(iris[,c(1,3)])
+feature_comparison[6] <- get_twcss(iris[,c(1,4)])
+feature_comparison[7] <- get_twcss(iris[,c(2,3)])
+feature_comparison[8] <- get_twcss(iris[,c(2,4)])
+feature_comparison[9] <- get_twcss(iris[,c(3,4)])
+# and all 3-tuples
+feature_comparison[10] <- get_twcss(iris[,c(1,2,3)])
+feature_comparison[11] <- get_twcss(iris[,c(1,2,4)])
+feature_comparison[12] <- get_twcss(iris[,c(1,3,4)])
+feature_comparison[13] <- get_twcss(iris[,c(2,3,4)])
+# and all predictors together
+feature_comparison[14] <- get_twcss(iris[,c(1,2,3, 4)])
+
+plot(feature_comparison, xlab = 'index', ylab = 'wcss')
+
+# identify a good k value
+fviz_nbclust(x = unlabeled_df
+             , FUNcluster = kmeans
+             , method = "wss"
+             , k.max = 15) 
+
+# training a clustering model
+km <- kmeans(x=unlabeled_df       # features
+             , centers=3          # number of clusters
+             , iter.max=20        # max number of iterations
+             , nstart= 20         # number of random starting partitions
+       )
+
+# plot the clusters
+fviz_cluster(object=km
+             , data=unlabeled_df
+             , ellipse.type = "norm"
+             , palette = "jco"
+             , ggtheme = theme_minimal()
+             , geom = "point"
+             )
+
+cat("Size of each cluster: ", km$size, "\n")
+
+table(km$cluster, iris$Species) # compare the predicted clusters with the labeled data
+
+```
