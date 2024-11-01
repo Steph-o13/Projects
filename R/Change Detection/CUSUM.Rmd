@@ -1,0 +1,186 @@
+---
+title: "CUSUM - Change Detection"
+output: html_document
+classoption: landscape
+---
+
+```{r setup, include=FALSE, message=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(outliers)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(reshape2)
+library(purrr)
+#rm(list = ls()) # clear out old environmental variables
+```
+
+#### Using the [crime dataset](http://www.statsci.org/data/general/uscrime.html), test to see whether there are any outliers in the last column (number of crimes per 100k people). Use the `grubbs.test` function in the outliers package of R. 
+
+The crime dataset contains data on the effect of punishment regimes on crime rates and includes the columns: 
+
+- `M`: percentage of males aged 14-24 in total state population
+- `So`: indicator for a southern state
+- `Ed`: mean years of schooling of the population aged 25 and up
+- `Po1`: per capita expenditure on police protection in 1960
+- `Po2`: per capita expenditure on police protection in 1959
+- `LF`: labor force rate of civilian urban males aged 14-24
+- `M.F`: the number of males per 100 females
+- `Pop`: the state population in 1960 in hundreds of thousands
+- `U1`: the unemployment rate of urban males aged 14-24
+- `U2`: the unemployment rate of urban males aged 35-39
+- `Wealth`: the median value of transferable assets of family income
+- `Ineq`: income inequality; the percentage of families earning below half the median income
+- `Prob`: the probability of imprisonment; the ratio of number of commitments to number of offenses
+- `Time`: the average time in months served by offenders in state prisons before their first release
+- `Crime`: the crime rate; number of offenses per 100k population in 1960
+
+So this dataset appears to largely focus on male criminal offenders, which may be a hidden source of bias. 
+
+The Grubbs Test is a method to identify outliers in univariate data that involves quantifying how far away a datapoint is from other values using the Normal Distribution. The test statistic Z is calculated from the most extreme datapoint and the test statistic corresponds to a p-value that represents the likelihood of seeing that outlier.   
+
+*Z = |mean-datapoint| / standard deviation* 
+
+The Null Hypothesis and Alternative Hypothesis for Grubbs Test are as follows: 
+
+  H~0~: there are no outliers in the dataset
+  
+  H~a~: there is an outlier in the dataset
+
+There is quite a range in the `Crime` column, from 342.0 to 1993.0. Additionally, the difference between the mean and the median (`905.1 - 831.0 = 74.1`) is large enough to make me believe that there likely are outliers in this column that are pulling the mean higher. Graphing this data with a boxplot, qqplot, and histogram gives me further reason to believe there are outliers this column.
+
+```{r crime outliers}
+# load data
+crime <- read.table("uscrime.txt",  stringsAsFactors = FALSE, header = TRUE)
+head(crime, 5)
+
+crime_rate <- crime$Crime             # grab just the last column
+
+# plotting
+summary(crime_rate)                   # get summary statistics on the column
+hist(crime_rate, col = "cadetblue1")  # plot a histogram of the crime column
+ggplot(crime, aes(y=Crime)) +         # plot a boxplot to observe potential outliers that way
+  geom_boxplot(outlier.colour="red"
+               , outlier.shape=3
+               , outlier.size=2
+               , fill = "darkseagreen1"
+               ) +
+  theme_minimal()
+
+ggqqplot(crime                        # plot a qqplot
+         , x="Crime"
+         , color = "pink")
+
+# run the test, testing for two outliers
+gtest <- grubbs.test(x=crime_rate, type=10)
+gtest
+```
+Since the p-value is greater than 0.05, the Null Hypothesis that the dataset has no outliers can't be rejected. This indicates that the potential outliers seen in the graphs may have been caused by randomness. 
+
+
+#### Using the Atlanta temperature 1996-2015 dataset, use a CUSUM approch to identify when unofficial summer ends (when the temperature starts cooling off) each year.
+
+I decided to try to do all of this in R to get more practice with it. I grabbed the dataset and feature engineered what I needed to do a CUSUM analysis: 
+
+- `dates`: the dates of the data
+- `mu`: the mean temperature across dates 
+- `xi`: the observed average temperature across all years for each date
+- `iDiff`: the calculation for increasing differences
+- `dDiff`: the calculation for decreasing differences
+- `increase`: the cumulative sum of increasing differences
+- `decrease`: the cumulative sum of decreasing differences
+- `iChange`: a boolean marking rows where an increase has been identified
+- `dChange`: a boolean marking rows where a decrease has been identified
+
+I wanted to check for changes in both directions, increasing and decreasing, so I calculated both metrics at the same time.
+
+After observing how the data was behaving with this model, I set my critical value to five and threshold to 30. The goal was to not generate many false positives, as I would consider that a greater problem for the model, but also not be so insensitive that the model would be slow to identify changes. 
+
+For when the temperature changes each year, with the threshold and critical value I used, the model identified mid-October as the turning point from Summer to Fall in Atlanta (October 13th). 
+
+```{r summer ends}
+# load data
+temps <- read.table("temps.txt",  stringsAsFactors = FALSE, header = TRUE)
+# remove weird X on column names
+names(temps) <- gsub(x=names(temps), pattern = "X", replacement = "")
+
+C <- 5                                     # Critical Value
+T <- 30                                    # Threshold
+
+dates <- temps[,1]                         # get list of dates
+mu <- mean(as.matrix(temps[,-1]))          # get the mean of all the temperatures
+xi <- rowMeans(as.matrix(temps[,-1]))      # get the average temperature for each day
+iDiff <- xi-mu-C                           # check for increasing difference
+dDiff <- mu-xi-C                           # check for decreasing difference
+
+
+cusum <- data.frame(dates                  # create table to store the cusum data
+                      , xi
+                      , mu
+                      , iDiff
+                      , dDiff
+                      )
+
+# calculate CUSUM metric, but set to zero if the metric is less than zero
+cusum <- cusum %>% mutate(increase = accumulate(iDiff,  ~ ifelse(.x + .y < 0, 0, .x + .y))) 
+cusum <- cusum %>% mutate(decrease = accumulate(dDiff,  ~ ifelse(.x + .y < 0, 0, .x + .y)))
+#cusum$decrease <- temp_dec$decrease   # add decreasing metric to cusum table
+
+# if the metric >= T, mark TRUE
+cusum$iChange <- ifelse(cusum$increase>=T, TRUE, FALSE)
+cusum$dChange <- ifelse(cusum$decrease>=T, TRUE, FALSE) 
+
+# get all rows after the first increase change has been identified
+increase_identified <- cusum[which(cusum$iChange == TRUE),]
+decrease_identified <- cusum[which(cusum$dChange == TRUE),] 
+
+head(cusum, 5)
+tail(cusum, 5)
+
+# dates identified with increased changes
+increase_identified$dates[increase_identified=TRUE] 
+
+# dates identified with decreased changes
+decrease_identified$dates[decrease_identified=TRUE] 
+```
+
+#### Using the temperature dataset, use a CUSUM approch to make a judgment of whether Atlanta's summer climate has gotten warmer in that time (and if so, when).
+
+If we look at the data over the years (via the violin plots), there does appear to be a trend of temperatures increasing in some sense. The temperature fluctuations appear to be more erratic as time goes on, with sharper jumps up and down in temperature over time. 
+
+This time instead of taking the average temperature by month, I'm looking at the data over each year to get an idea of how average temperatures in the summer have changed over time. With a smaller dataset to work with and with each datapoint representing more months of time, I have to lower the threshold and critical value so they do not completely swamp the datapoints. 
+
+This model detects that there has been an increased change in Atlanta's summer temperatures, with the first change identified in 2010. 
+
+```{r climate}
+# make dataset long
+temps_year <- melt(temps
+                   , id.vars = c("DAY")
+                   , variable.name= "YEAR"
+                   , value.name="TEMP")
+head(temps_year)
+
+# violin plot of yearly temperatures
+ggplot(temps_year, aes(x=temps_year$YEAR, y=temps_year$TEMP)) +
+  geom_violin(fill="skyblue") +
+  xlab("year") +
+  ylab("temperature") +
+  theme_minimal()
+
+C2 <- .5           # Critical Value
+T2 <- 3            # Threshold
+
+# get yearly average temps
+cusum2 <- setNames(aggregate(temps_year$TEMP, list(temps_year$YEAR), FUN=mean),c('year', 'xi'))
+
+cusum2$mu <- mean(as.matrix(cusum2[,2]))     # overall mean
+cusum2$iDiff <- cusum2$xi-cusum2$mu-C2       # check for increasing difference
+
+# calculate CUSUM metric, but set to zero if the metric is less than zero
+cusum2 <- cusum2 %>% mutate(increase = accumulate(iDiff,  ~ ifelse(.x + .y < 0, 0, .x + .y))) 
+
+# if increasing CUSUM metric >= T, mark TRUE
+cusum2$iChange <- ifelse(cusum2$increase>=T2, TRUE, FALSE)    
+cusum2
+```
+
