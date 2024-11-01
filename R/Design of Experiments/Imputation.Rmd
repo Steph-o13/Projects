@@ -1,0 +1,91 @@
+---
+title: "Mean & Regression (+Perturbation) Imputation - DOE"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+#rm(list = ls()) # clear out old environmental variables
+```
+
+*Using the breast cancer data set, use the mean/mode imputation method to impute values for the missing data.*
+
+```{r mean/mode imputation}
+# load data
+data = read.table("breast-cancer-wisconsin.data.txt", stringsAsFactors=FALSE, header = FALSE, sep = ',')
+head(data)
+
+# find the missing data
+print(summary(data))                # V7 seems to be missing some data
+impute_data <- which(data$V7=="?")
+impute_data
+
+# percentage of rows with data that's missing (only impute up to 5% of any column)
+length(impute_data)/nrow(data)
+
+# check if the missing data is biased in some way
+data_clean <- data[-impute_data,]
+data_missing <- data[impute_data,]
+
+# compare ratios from each group with relation to the target variable V11
+sum(data$V11==2)/nrow(data)
+sum(data_clean$V11==2)/nrow(data_clean)
+sum(data_missing$V11==2)/nrow(data_missing) # bias with the missing group
+
+# do mean imputation for the missing data
+data[impute_data,]$V7 <- mean(as.numeric(data_clean$V7))
+
+# check that the imputation happened
+data[impute_data,]
+```
+
+*Using the breast cancer data set, use regression to impute values for the missing data.*
+
+```{r regression imputation}
+# load data
+data = read.table("breast-cancer-wisconsin.data.txt", stringsAsFactors=FALSE, header = FALSE, sep = ',')
+head(data)
+
+# find the missing data
+print(summary(data))                # V7 seems to be missing some data
+impute_data <- which(data$V7=="?")
+impute_data
+
+# let's use the "clean" data as training data to predict the missing values for regression
+# train the linear regression model on all attributes
+lm_model <- lm(formula = V7 ~.
+               , data = data_clean
+               )
+summary(lm_model)
+
+# predict the value of V7 for the missing rows
+predictions <- predict(lm_model, data.frame(data_missing))
+predictions
+
+# insert the predictions into the missing data
+data[impute_data,]$V7 <- predictions
+
+# check that the imputation happened
+data[impute_data,]
+```
+
+*Using the breast cancer data set, use regression with perturbation to impute values for the missing data.*
+
+```{r regression+perturbation imputation}
+# generate some perturbation value
+perturb <- rnorm(length(impute_data), 0,1)
+
+# use the predictions previously gotten via regression and shift them by the perturb amount
+perturbed_preds <- round(perturb+predictions)
+
+
+# insert the perturbed predictions into the missing data
+data[impute_data,]$V7 <- perturbed_preds
+
+# check that the imputation happened
+data[impute_data,]
+```
+
+
