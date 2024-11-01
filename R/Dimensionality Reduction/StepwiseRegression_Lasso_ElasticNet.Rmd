@@ -1,0 +1,161 @@
+---
+title: "Stepwise Regression, Lasso, Elastic Net - Dimensionality Reduction & Variable Selection"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(glmnet)
+#rm(list = ls()) # clear out old environmental variables
+```
+
+
+
+
+```{r Load Data}
+# load data
+crime_df <- read.table("uscrime.txt",  stringsAsFactors = FALSE, header = TRUE)
+tail(crime_df, 5)
+```
+
+#### Using the crime data set, build a regression model using Stepwise Regression
+
+I started with a model that used all predictors and then used stepwise regression to reduce the number of variables. At each step, the stepwise regression removed the predictor with the lowest AIC until finally the dataset was reduced from 15 predictors to 8. 
+
+The initial model with all predictors resulted in an adjusted R-squared value of 0.7078, indicating that 70.78% of the model's variability is explained by the predictors. 
+
+The stepwise regression resulted in a model containing 8 predictors: 
+
+- `M`
+- `Ed`
+- `Po1`
+- `M.F`
+- `U1`
+- `U2`
+- `Ineq`
+- `Prob`
+
+And resulted in an adjusted R-squared value of 0.7444, indicating that 74.44% of the model's variability is explained by the predictors. 
+
+Stepwise Regression resulted in a model that improved in two ways:
+
+- improved evaluation metrics
+- increased model simplicity
+
+```{r Stepwise Regression}
+# set seed for reproducibility
+set.seed(1)
+
+# start with a model that has all predictors
+initial_model <- lm(Crime~.           
+                     , data = crime_df
+                     )
+summary(initial_model)
+
+# perform both direction stepwise regression
+stepwise_model <- step(initial_model
+                       , scope = list(lower = formula(lm(Crime~1, data = crime_df))
+                                      , upper = formula(lm(Crime~., data = crime_df))
+                                      )
+                       , direction = "both"
+                       )
+
+summary(stepwise_model)
+
+```
+
+
+#### Using the crime data set, build a regression model using Lasso Regression
+
+I created a lasso model using `cv.glmnet`, which automatically scaled the data for me. The tau / lambda threshold that worked best for the model was 8.83952725, which best minimized the MSE, and resulted in a regression with 11 non-zero variables. In other words, the variable selection process removed 4 predictors.  The most that best minimized the MSE resulted in an R^2^ of 0.7743174.
+
+```{r Lasso Regression}
+# set seed for reproducibility
+set.seed(1)
+
+# predictors and response
+X = as.matrix(crime_df[,-16])
+y = as.matrix(crime_df[,16])
+
+# do k-fold cross validation for lasso model
+lasso_model <- cv.glmnet(x = X
+                         , y = y
+                         , alpha = 1                        # lasso regression alpha = 1
+                         , nfolds = 8                       # number of folds
+                         , nlambda = 20                     # tau thresholds randomly generated
+                         , type.measure = "mse"             # squared error for gaussian models
+                         , family = "gaussian"
+                         , standardize = TRUE               # use automatically scaled data
+                         )
+
+# plot MSE of lasso model
+plot(lasso_model)
+
+# use the tau / lambda that corresponds to the lowest MSE
+lasso_model$lambda.min
+
+# get a list of tau/lambdas, cross-validation error, and number of non-zero coefficients for each lambda.
+cbind(lasso_model$lambda, lasso_model$cvm, lasso_model$nzero)
+
+# get the coefficients of the model with the best tau / lambda
+coef(lasso_model, s = lasso_model$lambda.min)
+
+# get predictions with best model
+y_pred <- predict(lasso_model, s = lasso_model$lambda.min, newx=X)
+
+# calculate Rsquared
+ss_total <- sum((y-mean(y))^2)
+ss_residual <- sum((y-y_pred)^2)
+r_squared <- 1 - (ss_residual/ss_total)
+cat("R-squared:", r_squared)
+```
+
+#### Using the crime data set, build a regression model using Elastic Net Regression
+
+Comparatively, I created an elastic net model using `cv.glmnet`, which automatically scaled the data for me. The tau / lambda threshold that worked best for the model was 13.4102353, which best minimized the MSE, and resulted in a regression with 14 non-zero variables. In other words, the variable selection process removed 1 predictor. The model that best minimized the MSE resulted in an R^2^ of 0.791126.
+
+```{r Elastic Net Regression}
+# set seed for reproducibility
+set.seed(1)
+
+# predictors and response
+X = as.matrix(crime_df[,-16])
+y = as.matrix(crime_df[,16])
+
+# do k-fold cross validation for Elastic Net Regression model
+enet_model <- cv.glmnet(x = X
+                         , y = y
+                         , alpha = .50                      # elastic regression alpha between 0,1
+                         , nfolds = 8                       # number of folds
+                         , nlambda = 20                     # tau thresholds randomly generated
+                         , type.measure = "mse"             # squared error for gaussian models
+                         , family = "gaussian"
+                         , standardize = TRUE               # use automatically scaled data
+                         )
+
+# plot MSE of elastic net model
+plot(enet_model)
+
+# use the tau / lambda that corresponds to the lowest MSE
+enet_model$lambda.min
+
+# get a list of tau/lambdas, cross-validation error, and number of non-zero coefficients for each lambda.
+cbind(enet_model$lambda, enet_model$cvm, enet_model$nzero)
+
+# get the coefficients of the model with the best tau / lambda
+coef(enet_model, s = enet_model$lambda.min)
+
+# get predictions with best model
+y_pred2 <- predict(enet_model, s = enet_model$lambda.min, newx=X)
+
+# calculate Rsquared
+ss_total2 <- sum((y-mean(y))^2)
+ss_residual2 <- sum((y-y_pred2)^2)
+r_squared2 <- 1 - (ss_residual2/ss_total2)
+cat("R-squared:", r_squared2)
+```
+
+It is interesting that all three methods removed the variable `Time`. 
+
+Out of the two global optimization variable selection methods, the Lasso model resulted in a model with a lower error at `67598.55` while the Elastic Net model had a slightly higher error of `68930.95`, but the Elastic Net model had a higher R^2^ value of 0.791126 versus the 0.7743174 of Lasso.
