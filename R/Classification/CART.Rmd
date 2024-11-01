@@ -1,0 +1,260 @@
+---
+title: "CART - Classification"
+output: html_document
+---
+
+```{r setup, include=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tree)
+library(randomForest)
+library(caret)
+library(pROC)
+
+#rm(list = ls()) # clear out old environmental variables
+```
+
+#### Using the crime data set, find the best model you can using a (a) Regression Tree Model and a (b) Random Forest Model.
+
+The initial regression tree model split on the variables `Po1`, `Pop`, `LF`, and `NW` and ultimately ended up with seven leaves. 
+
+Since the original data set is very small, overfitting is likely occurring here. I used cross validation to evaluate the data to find the optimal level of tree complexity.  While the initial model's complexity of seven leaves performs better than most other possible number of leaves, it looks like there is some potential with a model with only two leaves. 
+
+I also decided to check the R2 values of each potential model. Based off this, it appears there may be some potential in a model with six leaves.
+
+```{r regression tree model}
+# set seed for reproducibility
+set.seed(42)
+
+# load data
+crime_df <- read.table("uscrime.txt",  stringsAsFactors = FALSE, header = TRUE)
+tail(crime_df, 5)
+
+# train regression tree model
+initialTreeModel <- tree(Crime~.            # response~.predictors
+                            , data = crime_df
+                            )
+summary(initialTreeModel)
+
+# graph the tree
+plot(initialTreeModel)
+text(initialTreeModel)
+title("initial regression tree")
+
+# let's look at how the branching was done
+initialTreeModel$frame
+
+# calculate R2 of initial model
+initialTreePreds <- predict(initialTreeModel, data = crime_df[,1:15])
+RSS <- sum((initialTreePreds - crime_df[,16])^2)
+TSS <- sum((crime_df[,16] - mean(crime_df[,16]))^2)
+R2 <- 1-(RSS/TSS)
+R2
+
+# perform cross validation to determine the optimal level of tree complexity
+cv.TreeModel <- cv.tree(initialTreeModel)
+cv.TreeModel
+
+# plot the deviance against the number of nodes
+plot(cv.TreeModel$size, cv.TreeModel$dev, type = 'b', col = 'blue', xlab = "number of leaves", ylab = "deviation")
+
+# let's calculate the R2 scores for each model with leaves between 2 and 7
+R2_vector <- vector()   
+
+for (leaves in 2:8) {
+  # prune the initial tree model
+  pruned.TreeModel <- prune.tree(initialTreeModel
+                              , best = leaves)
+  
+  # get the predictions
+  TreePreds <- predict(pruned.TreeModel, data = crime_df[,1:15])
+  
+  # calculate R2
+  RSS <- sum((TreePreds - crime_df[,16])^2)
+  TSS <- sum((crime_df[,16] - mean(crime_df[,16]))^2)
+  R2 <- 1-(RSS/TSS)
+  
+  # store each model's R2 in this vector
+  R2_vector <- c(R2_vector, R2) 
+}
+
+cat("Max R2 achieved: ", max(R2_vector), "\n")  
+cat("Best performing number of leaves: ", which.max(R2_vector))  
+R2_vector
+
+# prune initial tree model down to 2 leaves
+pruned2.TreeModel <- prune.tree(initialTreeModel
+                              , best = 2)
+summary(pruned2.TreeModel)
+
+# graph the tree
+plot(pruned2.TreeModel)
+text(pruned2.TreeModel)
+title("pruned 2-leaf regression tree")
+
+# let's look at how the branching was done
+pruned2.TreeModel$frame
+
+# R2 score
+R2_vector[1]
+
+# prune initial tree model down to 6 leaves
+pruned6.TreeModel <- prune.tree(initialTreeModel
+                              , best = 6)
+summary(pruned6.TreeModel)
+
+# graph the tree
+plot(pruned6.TreeModel)
+text(pruned6.TreeModel)
+title("pruned 6-leaf regression tree")
+
+# let's look at how the branching was done
+pruned6.TreeModel$frame
+
+# R2 score
+R2_vector[6]
+
+```
+The R^2^ of the initial model was calculated as .7245, meaning that 72.45% of the variance in the initial model could be explained by the data. Meanwhile, the R^2^ of the pruned 2-leaf model dropped all the way down to .363, a big drop in model quality. While the initial model's residual mean deviance is lower than the pruned 6-leaf model, they have equal R2 values. At this point, I think the best regression tree model is the initial 7-leaf model.
+
+Now, moving on to the Random Forest model:
+
+The original data set has a total of 47 rows and a good rule of thumb is that each leaf ought to have at least 5% of the original data set within it. In this case, that is at least 3 data points in each leaf (rounded up). I will use that as the minimum node size. 
+
+Per this week's lectures, we should randomly choose a small number of factors and select the best factor within that set to branch on and a rule of thumb for the number of factors to use for this set is `1+log(n)`, where `n` is the number of factors. We have 15 factors in this data set.
+
+The R^2^ of the initial Random Forest model is much lower than the initial Regression Tree model - only 0.4253. I tried a variety of number of trees to see if I could improve the model. Based off this, the best performing model used a forest of 250 trees and had an R^2^ score of 0.4482. This is still a big drop in quality from the Regression Tree model, so it's likely that the single Regression Tree method works better for this specific data set and problem. 
+
+```{r random forest model}
+# set seed for reproducibility
+set.seed(42)
+
+# get the number of factors on which to branch (1 + log(n))
+num_factors <- ceiling(1+log(ncol(crime_df)-1))
+
+# get minimum number of nodes
+min_nodes <- ceiling(nrow(crime_df)*.05)
+
+# create initial random forest model
+initialRandomForest <- randomForest(Crime~.            # response~.predictors
+                            , data = crime_df
+                            , importance = TRUE
+                            , nodesize = min_nodes
+                            , mtry = num_factors
+                            , ntrees = 100
+                            )
+
+# get predictions
+rfTreePreds <- predict(initialRandomForest, data = crime_df[,1:15])
+
+# calculate R2
+RSS <- sum((rfTreePreds - crime_df[,16])^2)
+TSS <- sum((crime_df[,16] - mean(crime_df[,16]))^2)
+R2 <- 1-(RSS/TSS)
+R2
+
+# let's try adjusting the number of trees to see if we can get a better performing model.
+num_trees <- c(50, 100, 250, 500, 750, 900, 1000, 1500)
+R2_vector <- vector()
+
+for (trees in num_trees) {
+  RandomForest <- randomForest(Crime~.            # response~.predictors
+                            , data = crime_df
+                            , importance = TRUE
+                            , nodesize = min_nodes
+                            , mtry = num_factors
+                            , ntrees = trees
+                            )
+  # get predictions
+  TreePreds <- predict(RandomForest, data = crime_df[,1:15])
+
+  # calculate R2
+  RSS <- sum((TreePreds - crime_df[,16])^2)
+  TSS <- sum((crime_df[,16] - mean(crime_df[,16]))^2)
+  R2 <- 1-(RSS/TSS)
+  
+  # store R2 scores in this vector
+  R2_vector <- c(R2_vector, R2)
+}
+
+cat("Max R2 achieved: ", max(R2_vector), "\n")  
+cat("Best performing number of trees: ", which.max(R2_vector), "\n")   # trees = 250
+R2_vector
+```
+
+
+#### Using the GermanCredit data set, use logistic regression to find a good predictive model for whether credit applicants are good credit risks or not. Show your model (factors and their coefficients), the software output, and the quality of fit.
+
+This data set has 20 features and the target variable is binary with `1 = good` and `2 = bad`. There are 700 `good` data points and 300 `bad` data points, for a total of 1000 data points.  Since we are doing logistic regression on this data, we need the final output to be between 0 and 1, so we have to relabel the target variable with `good = 0` and `bad = 1`. 
+
+To measure the effectiveness of this model, we need to use a confusion matrix to then calculate evaluation metrics like `accuracy = (TP+TN)/(TP+TN+FP+FN)`. We can also use an ROC curve and get from that the area under the curve to get a quick estimate of model quality.  In this case, the initial model's AUC is 0.6891, which isn't bad. An AUC of 0.5 is equivalent to random guessing, so we're at least doing better than random guessing at this point. The accuracy of this initial model came out to be 0.73, which isn't bad at all. 
+
+#### Because the model gives a result between 0 and 1, it requires setting a threshold probability to separate between "good" and bad answers. in this data set, they estimate that incorrectly identifying a bad customer is five times worse than incorrectly classifying a good customer. Determine a good threshold probability based on your model.
+
+After testing several different thresholds, I found that the lower threshold could improve accuracy, but it would also more bad customers to be incorrectly identified as good ones. Thus a higher threshold seems pertinent. 
+
+Since the cost of incorrectly identifying a bad customer (x) is five times worse than incorrectly identifying a good customer (y), `x = 5y`. To lower the risk of misclassifying bad customers, we need to increase the threshold. I ended up at threshold = 0.75, which only had ten bad customer misclassifications and an accuracy of nearly 73%. 
+
+
+```{r logistic regression}
+# set seed for reproducibility
+set.seed(42)
+
+# load data
+credit_df <- read.table("germancredit.txt", header = FALSE)
+
+# relabel target variable
+credit_df$V21[credit_df$V21 == 1] <- 0
+credit_df$V21[credit_df$V21 == 2] <- 1
+
+# division of good and bad data points
+table(credit_df$V21)
+
+# split data into training and validation sets using the caret package
+credit_split <- createDataPartition(credit_df$V21   # target variable
+                                    , times = 1     # 1 partition
+                                    , p = 0.7       # 70% into training set
+                                    , list=FALSE    # results into matrix form
+                                    )
+trainSet <- credit_df[credit_split,]
+validationSet <- credit_df[-credit_split,]
+
+# the division of good and bad data points in training and validation sets
+table(trainSet$V21)
+table(validationSet$V21)
+
+# let's train a logistic regression model on the training set
+logisticRegressionModel <- glm(V21~.                                
+                               , data = trainSet
+                               , family = binomial(link = "logit")
+                               )
+summary(logisticRegressionModel)
+
+# Let's make predictions on the validation data
+yhat <- predict(logisticRegressionModel
+                 , newdata = validationSet[,-21]
+                 , type = "response"             # "response" ensures we don't get log-odd predictions
+                 )
+
+# calculate ROC curve 
+roc(validationSet$V21, round(yhat))   # round yhat to get binary predictions
+
+# set the threshold
+threshold <- 0.75
+yhat_threshold <- as.integer(yhat > threshold)
+
+# create confusion matrix 
+confusion_matrix <- as.matrix(table(yhat_threshold,validationSet$V21))
+names(dimnames(confusion_matrix)) <- c("predicted", "observed")
+confusion_matrix
+
+# calculate accuracy = (TP+TN)/(TP+TN+FP+FN)
+accuracy <- (confusion_matrix[1,1] + confusion_matrix[2,2]) /(confusion_matrix[1,1] + confusion_matrix[2,2] + (confusion_matrix[1,2] + confusion_matrix[2,1]))
+accuracy
+
+# check false positives and false negatives
+fn <- confusion_matrix[1,2]
+fp <- confusion_matrix[2,1]
+fn
+fp
+```
