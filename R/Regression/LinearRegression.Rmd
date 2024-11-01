@@ -1,0 +1,116 @@
+---
+title: "Linear Regression"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#rm(list = ls()) # clear out old environmental variables
+```
+
+
+#### Using crime data, use regression (a useful R function is `lm` or `glm`) to predict the observed crime rate in a city with the below data. Show your model (the factors and coefficients), the software output, and the quality of fit. Note that because there are only 47 data points and 15 predictors, there will be some overfitting and we'll learn how to handle that later in the course. 
+
+- `M` = 14.0
+- `So` = 0
+- `Ed` = 10.0
+- `Po1` = 12.0
+- `Po2` = 15.5
+- `LF` = 0.640
+- `M.F`  = 94.0
+- `Pop` = 150
+- `NW` = 1.1
+- `U1`= 0.120
+- `U2` = 3.6
+- `Wealth` = 3200
+- `Ineq` = 20.1
+- `Prob` = 0.04
+- `Time` = 39.0
+
+Below are the descriptions for each of the columns in the dataset. 
+
+- `M`: percentage of males aged 14-24 in total state population
+- `So`: indicator for a southern state
+- `Ed`: mean years of schooling of the population aged 25 and up
+- `Po1`: per capita expenditure on police protection in 1960
+- `Po2`: per capita expenditure on police protection in 1959
+- `LF`: labor force rate of civilian urban males aged 14-24
+- `M.F`: the number of males per 100 females
+- `Pop`: the state population in 1960 in hundreds of thousands
+- `U1`: the unemployment rate of urban males aged 14-24
+- `U2`: the unemployment rate of urban males aged 35-39
+- `Wealth`: the median value of transferable assets of family income
+- `Ineq`: income inequality; the percentage of families earning below half the median income
+- `Prob`: the probability of imprisonment; the ratio of number of commitments to number of offenses
+- `Time`: the average time in months served by offenders in state prisons before their first release
+- `Crime`: the crime rate; number of offenses per 100k population in 1960
+
+```{r load data}
+# load data
+crime_df <- read.table("uscrime.txt",  stringsAsFactors = FALSE, header = TRUE)
+head(crime_df, 5)
+
+summary(crime_df$Crime)
+```
+
+First I need to load the data, train the initial linear model, and make a prediction of the crime rate for the test city: 
+
+```{r crime}
+# create the test city for which I want to predict the crime rate:
+city <- data.frame(M = 14.0
+                   , So = 0
+                   , Ed = 10.0
+                   , Po1 = 12.0
+                   , Po2 = 15.5
+                   , LF = 0.640
+                   , M.F = 94.0
+                   , Pop = 150
+                   , NW = 1.1
+                   , U1 = 0.120
+                   , U2 = 3.6
+                   , Wealth = 3200
+                   , Ineq = 20.1
+                   , Prob = 0.04
+                   , Time = 39.0
+                   )
+
+# train the linear regression model on all attributes
+lm_model <- lm(formula = Crime ~.
+               , data = crime_df
+               )
+summary(lm_model)
+
+# predict the crime rate for the city using the model trained on all attributes
+crime_preds_lm_model <- predict(lm_model, city)
+crime_preds_lm_model 
+```
+The initial model predicted a crime rate of 155.4349. This value is suspicious since the minimum value of Crime in the data set is 342.0. This means there are likely some features in the model that are irrelevant. 
+
+Looking at the summary of the model, the output includes some information on how significant each attribute is to the model. 
+
+- Three asterisks represent a significance at the p < 0.001 level, a highly significant p-value
+- Two asterisks represent significance at the p < 0.01 level
+- one asterisk indicates significance at the p < 0.05 level
+- One period indicates a significance at the p < 0.10 level
+
+If we only include attributes that are significant, will the model perform better? 
+
+
+``` {r new model}
+# train  new model with only significant attributes
+new_lm_model <-  lm(formula = Crime ~ M+Ed+Po1+U2+Ineq+Prob
+               , data = crime_df
+               )
+summary(new_lm_model)
+
+# predict the crime rate for the city using the model trained on significant attributes
+crime_preds_new_lm_model <- predict(new_lm_model, city)
+crime_preds_new_lm_model 
+```
+This model made a crime prediction of 1304.245, which is much more in line with what I would expect given this data set.  Additionally, the evaluation metrics have improved too:
+
+- Adjusted R-squared grew from 0.7078 to 0.7307
+- The p-value shrunk from 3.539e-07 to 3.418e-11
+
+So it seems safe to say that the model performed better when I trimmed out some of the insigificant features. 
