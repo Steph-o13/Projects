@@ -1,0 +1,109 @@
+---
+title: "KNN Classification; Cross Validation"
+classoption: landscape
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.pos = "!h")
+library(kernlab)    # SVM
+library(kknn)       # KNN
+library(factoextra) # elbow method
+```
+
+
+```{r load data}
+cc <- read.table("credit_card_data.txt",  stringsAsFactors = FALSE, header = FALSE)
+iris <- read.table("iris.txt")
+```
+
+
+####  Use the kknn function to find a good classifier using cross validation. 
+
+The KKNN package has a couple built-in options for cross validation, including `cv.kknn` with the `kcv` parameter, which is what I ultimately went with for this problem. 
+
+Like with the previous homework, I used max_k as the square root of the number of rows (approximately 26) as the number of k values to test. Since the professor recommended 10 as a commonly used number of folds for k-Fold Cross Validation, I went with that for my `kcv` parameter. 
+
+While all of the models performed moderately well in terms of accuracy, model number 15 reached maximum accuracy of 85.77982%.
+
+```{r cross validation}
+set.seed(42)                       # set seed for reproducibility of results
+
+max_k <- ceiling(sqrt(nrow(cc)))   # calculate the max k value as the square root of the number of data points, rounded up
+acc_cvknn <- vector()              # empty vector to store accuracy for each k
+
+for (k in 1:max_k) {
+  cv_knn <- cv.kknn(V11~.          # response variable
+                   , cc         
+                   , kcv=10        # 10-folds
+                   , k=k          
+                   , scale=TRUE) 
+  
+  preds <- as.integer(cv_knn[[1]][,2] + 0.5) # kknn preds are continuous, so round to get preds to 0 or 1   
+  acc <- sum(preds == cc[,11]) / nrow(cc)    # calculate accuracy for each model
+  acc_cvknn <- c(acc_cvknn, acc)             # store each model's accuracy in this vector
+
+}
+cat("Max accuracy achieved: ", max(acc_cvknn), "\n")  
+cat("Best performing k value: ", which.max(acc_cvknn))    
+
+```
+
+
+####  Use the ksvm or kknn function to find a good classifier by splitting the data into training, validation, and test data sets.
+
+To remain consistent with the previous problem, I am using kknn here. We want the training set to be the largest, so the model has as much data as possible to learn from while leaving enough data to test and validate on. I decided to go with a 70/15/15 train/validate/test split. Since we're not just making a single model (we're trying out different values of k for K-Nearest Neighbors), we need a validation set to choose the correct model. Then the testing set can be used to evaluate the chosen model overall. 
+
+In this case, it looks like out of the 26 k values tried, k = 9 proved to have the highest accuracy during the training and validating portion of the process. Once k=9 was selected as the best option for modeling, I trained a new model with that parameter and used the testing set to do a final evaluation of the model.  The final model's accuracy came out around 84%. 
+
+
+```{r train-validation-test split}
+set.seed(42)                       # set seed for reproducibility of results
+max_k <- ceiling(sqrt(nrow(cc)))   # calculate the max k value as the square root of the number of data points, rounded up
+acc_tvt <- vector()                # empty vector to store accuracy for each k
+
+# 70 / 15 / 15 split
+train_size <- floor(0.70*nrow(cc)) # 70% of dataset for training = 457 rows
+
+train_idx <- sample(x=nrow(cc)     # randomly grab the indices of 457 rows from dataset without replacement.         
+                     , size=train_size   
+                     , replace=FALSE)
+
+rest <- cc[-train_idx,]               # grab the unused rows of data      
+ 
+validate_idx <- sample(x=nrow(rest)   # grab half of the unused indices to use for validation without replacement
+                         , size=floor(nrow(rest)/2)
+                         , replace=FALSE)
+
+train_set <- cc[train_idx,]          # grab the rows associated with the training indices
+validate_set <- rest[validate_idx,]  # grab the rows associated with the validation indices
+test_set <- rest[-validate_idx,]     # grab the remaining rows for testing
+
+# best k selection
+for (k in 1:max_k) {
+  knn_tvt <- kknn(formula=V11~.   
+                   , train=train_set      # train using the training set
+                   , test=validate_set    # evaluate model with validation set
+                   , kernel='optimal'
+                   , k=k
+                   , scale=TRUE)
+  
+  preds <- as.integer(fitted(knn_tvt)+0.5)              
+  acc_tvt[k] <- sum(preds == validate_set[,11]) / nrow(validate_set)  
+}
+cat("Max accuracy achieved: ", max(acc_tvt), "\n")  
+cat("Best performing k value: ", which.max(acc_tvt), "\n")    
+
+# model evaluation
+knn <- kknn(formula=V11~.
+            , train=train_set         # train using training set
+            , test=test_set           # final evaluation with test set
+            , kernel='optimal'
+            , k=which.max(acc_tvt)    # choose the k that performed best during validation stage
+            , scale=TRUE)
+
+preds <- as.integer(fitted(knn)+0.5)
+accuracy <- sum(preds == test_set[,11]) / nrow(test_set)  
+cat("Test set accuracy evaluation: ", accuracy, "\n")
+```
+
