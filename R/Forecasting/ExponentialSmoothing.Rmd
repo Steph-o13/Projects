@@ -1,0 +1,175 @@
+---
+title: "Exponential Smoothing - Forecasting"
+output: html_document
+classoption: landscape
+---
+
+```{r setup, include=FALSE, message=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(forecast)
+library(reshape2)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(purrr)
+#rm(list = ls()) # clear out old environmental variables
+```
+
+
+```{r load data}
+temps <- read.table("temps.txt",  stringsAsFactors = FALSE, header = TRUE)
+# remove weird X on column names
+names(temps) <- gsub(x=names(temps), pattern = "X", replacement = "")
+head(temps)
+
+# set seed for reproducible results
+set.seed(42)
+```
+
+#### Using the 20 years of daily high temperature data for Atlanta, build an use an Exponential Smoothing Model to help make a judgment of whether the unofficial end of summer has gotten later over those 20 years. 
+
+##### Getting a handle on Exponential Smoothing
+
+To get a better visual of the potential changes each year, I looked at the daily and yearly averages for trends. Like with the previous daily model, there does not appear to be any consistent trend that indicates that summer is ending later and later each year. I used this opportunity to compare three different models for each of the daily and yearly averages with low (0.2), medium (0.5), and high (0.8) α values to get a better understanding of how Exponential Smoothing works. Based off this alone, I don't think there is enough data here to conclude with any confidence that summer is ending later and later as time goes on in Atlanta, especially since some of the increases in average temperature may be caused by randomness.
+
+```{r average yearly temperatures}
+# get average daily and yearly temperatures
+yearly_avg <- colMeans(as.matrix(temps[,-1]))
+daily_avg <- rowMeans(as.matrix(temps[,-1]))
+
+# convert to time series data format
+ts_avg_year <- ts(data = yearly_avg, start = 1996)
+ts_avg_daily <- ts(data = daily_avg)
+
+# create Exponential Smoothing model with Holt Winters
+avg_year_1 <- HoltWinters(ts_avg_year, alpha = .2, beta = FALSE, gamma = FALSE)
+avg_year_2 <- HoltWinters(ts_avg_year, alpha = .8, beta = FALSE, gamma = FALSE)
+avg_year_3 <- HoltWinters(ts_avg_year, alpha = 0.5, beta = FALSE, gamma = FALSE)
+
+avg_daily_1 <- HoltWinters(ts_avg_daily, alpha = .2, beta = FALSE, gamma = FALSE)
+avg_daily_2 <- HoltWinters(ts_avg_daily, alpha = .8, beta = FALSE, gamma = FALSE)
+avg_daily_3 <- HoltWinters(ts_avg_daily, alpha = 0.5, beta = FALSE, gamma = FALSE)
+
+# plot the observed yearly average values with three different smoothed models (low, medium, high alpha)
+plot(ts_avg_year, ylab = "temperatures", xlim = c(1996, 2015))
+lines(avg_year_1$fitted[,1], lty = 2, col = "red")
+lines(avg_year_2$fitted[,1], lty = 2, col = "blue")
+lines(avg_year_3$fitted[,1], lty = 2, col = "green")
+
+# plot the observed daily average values with three different smoothed models (low, medium, high alpha)
+plot(ts_avg_daily, ylab = "temperatures")
+lines(avg_daily_1$fitted[,1], lty = 2, col = "red")
+lines(avg_daily_2$fitted[,1], lty = 2, col = "blue")
+lines(avg_daily_3$fitted[,1], lty = 2, col = "green")
+```
+
+
+##### Reformatting Data & HoltWinters
+
+First I reformatted the `temps` data to be in a time-series format and converted it into a time-series object so that I can make use of some of the functions R has to analyze time series data. The decomposition of the the data suggests that there has been a trend of increasing high temperatures over the years and the seasonal cycle of temperatures appears pretty consistent to the eye. 
+
+I tried two different models on the daily time series data, one with a low α value of 0.2 and one with a high α value of 0.8.  The higher α gives more weight to the observed value and the end result is that the model with the higher α is much less smooth than the model with the lower α. However, with so many data points and such a stuffed graph, it's difficult to observe any real yearly trends with the naked eye. It doesn't appear that there is a trend towards a later and later end of summer visually. 
+
+```{r exponential smoothing}
+# reformat data into two columns: one data point for each day and its recorded high temperature
+temps_year <- melt(temps
+                   , id.vars = c("DAY")
+                   , variable.name= "YEAR"
+                   , value.name="TEMP")
+
+# violin plot of yearly temperatures
+ggplot(temps_year, aes(x=temps_year$YEAR, y=temps_year$TEMP)) +
+  geom_violin(fill="skyblue") +
+  xlab("year") +
+  ylab("temperature") +
+  theme_minimal()
+
+# create date column
+temps_year$DATE <- paste(temps_year$DAY, temps_year$YEAR)
+
+# reformat date column as date datatype instead of character
+temps_year$DATE <- dmy(temps_year$DATE)   
+head(temps_year)
+
+# create time-series object out of the data
+ts_temps <- ts(data = temps_year$TEMP, frequency=123, start=1996)
+
+# decompose the time series data into its three main components: long term trends, seasonal cycle, and random and plot it
+plot(decompose(ts_temps))
+
+# create Exponential Smoothing model with Holt Winters
+lowa_daily_forecast <- HoltWinters(ts_temps, alpha = .2, beta = FALSE, gamma = FALSE)
+higha_daily_forecast <-  HoltWinters(ts_temps, alpha = .8, beta = FALSE, gamma = FALSE)
+
+# look at the smoothed data
+lowa_fitted <- lowa_daily_forecast$fitted
+higha_fitted <- higha_daily_forecast$fitted
+head(lowa_fitted)
+head(higha_fitted)
+
+# add s1 = x1 for first smoothed data point
+# lowa_fitted[,-1]
+#temps_year[,3]
+
+
+# plot the forecasts
+plot(lowa_daily_forecast)
+plot(higha_daily_forecast)
+
+```
+
+
+##### CUSUM with smoothed HoltWinters data
+
+To see if summer appears to be ending later and later (mathematically), I used the smoothed data from the HoltWinters model to do a CUSUM analysis using the model made with the lower α, giving more weight to the previous baseline rather than the observed data points. I split the smoothed data into dataframes by year and did individual CUSUM analyses on each dataframe. From each analysis, I stored the first date that was identified as a decrease in temperature for each year.
+
+The results of that show that, for most years, the end of summer falls somewhere in October, usually early-mid October.  This analysis did not give me any concrete evidence that summer is definitely ending later and later as time goes by. Maybe there is a slight trend towards it ending later, but nothing so definitive as to make that conclusion definite.
+
+```{r CUSUM, , message=FALSE, warnings=FALSE}
+# get smoothed datapoints from low α HoltWinters
+smoothed_points <- as.matrix(lowa_fitted[,-1])
+length(smoothed_points) <- length(temps_year[,1])
+
+# rule of thumb: C = half of the standard deviation of the data points 
+stdev<- sd(as.matrix(lowa_fitted[,-1]))
+C <- .5*stdev           # Critical Value
+T <- 5*stdev            # Threshold
+
+smoothed_data <- data.frame(date_x = temps_year[,4]
+                              , year = temps_year[,2]
+                              , day = temps_year[,1]
+                              , xi = smoothed_points
+                              , mu = mean(as.matrix(lowa_fitted[,-1]))
+                              , dDiff = mean(as.matrix(lowa_fitted[,-1]))-smoothed_points-C
+                              )
+head(smoothed_data)
+
+# split data into subsets by year
+split_data <- split(smoothed_data, smoothed_data$year)
+
+results <- vector() # empty vector to store data
+
+for (i in 1:length(split_data)) {
+# low α HoltWinters CUSUM
+  cusum <- split_data[[i]]
+  
+  # calculate CUSUM metric, but set to zero if the metric is less than zero
+  cusum <- cusum %>% mutate(decrease = accumulate(dDiff,  ~ ifelse(.x + .y < 0, 0, .x + .y)))
+
+  # if the metric >= T, mark TRUE
+  cusum$dChange <- ifelse(cusum$decrease>=T, TRUE, FALSE)
+
+  # get all rows after the first increase change has been identified
+  decrease_identified <- cusum[which(cusum$dChange == TRUE),]
+
+  # get first identified decrease for each year
+  first_identified <- head(decrease_identified,1)
+
+  # store the first identified change of each year in the results vector
+  results <- as.vector(c(results, first_identified$day))
+}
+
+df_results <- data.frame(year = seq(1996, 2015)
+                         , day = results)
+df_results
+```
