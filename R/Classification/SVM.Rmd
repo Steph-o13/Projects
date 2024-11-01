@@ -1,0 +1,217 @@
+---
+title: "SVM Classification"
+
+classoption: landscape
+---
+
+```{r setup, include=FALSE, message=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.pos = "!h")
+library(kernlab)
+library(kknn)
+```
+
+Using the support vector machine function ksvm contained in the R package kernlab, find a good classifier for this data. Show the equation of your classifier, and how well it classifies the data points in the full data set**
+
+Some notes on the data: 
+
+- Columns 1-10 are the features.
+- Column 11 is the response column, with credit card application approval = 1 and credit card application denial = 0. 
+
+
+```{r load data} 
+data <- read.delim("credit_card_data-headers.txt")
+head(data, 5)
+```
+
+**Call ksvm**
+
+```{r test c}
+# C = lambda
+c_values <- c(.000000000001
+              , .00001
+              , .0001
+              , .005
+              , .5
+              , 1
+              , 5
+              , 10
+              , 25
+              , 50
+              , 99
+              , 100
+              , 110
+              , 125
+              , 175
+              , 250
+              , 400
+              , 500
+              , 600
+              , 750
+              , 1000
+              , 1234
+              , 1500
+              , 2000
+              , 10000
+              , 1000000
+              , 10000000000
+              , 10000000000000
+              )                             # create a vector of values to try for C
+accuracy <- vector()                        # empty vector to store accuracy for each C
+
+# larger c -> smaller margin, fewer misclassifications. 
+# smaller c -> larger margin, more misclassifications.
+
+for (c in c_values) { 
+  model <- ksvm(as.matrix(data[,1:10])
+                , as.factor(data[,11])
+                , type='C-svc'
+                , kernel='vanilladot'
+                , C=c                    # loop through each c in c_values
+                , scaled=TRUE
+                , kpar = list())         # hide the "setting default parameters" message
+  
+  preds <- predict(model,data[,1:10])                
+  acc <- sum(preds == data[,11]) / nrow(data)  # calculate accuracy for each model
+  accuracy <- c(accuracy, acc)                 # store each model's accuracy in this vector
+}
+
+accuracy               
+max(accuracy)          # the highest accuracy out of all tests (first if ties exist)
+which.max(accuracy)    # the model with the highest accuracy
+```
+
+I attempted to find a value of C that improves on C=100. After trying several different ones, I found that certain values performed just as well as C=100, but I wasn't able to find a C value that improved on it. 
+
+```{r best svm}
+model <- ksvm(as.matrix(data[,1:10])
+              , as.factor(data[,11])
+              , type='C-svc'
+              , kernel='vanilladot'
+              , C=c_values[which.max(accuracy)] # select c that performed best
+              , scaled=TRUE)
+
+```
+
+**Calculate a~1~…a~m~**
+
+```{r coefficients}
+# model@ grabs the following attribute from the model object.
+# xmatrix -> support vectors
+# coef -> coefficients
+a <- colSums(model@xmatrix[[1]] * model@coef[[1]])
+a
+```
+
+**Calculate a~0~**
+
+```{r intercept}
+# b -> offset 
+# ksvm stores the intercept as negative, so we need to flip the sign
+a0 <- -model@b
+a0
+
+# a + a0 is reconstructing y = ax + b for the equation of the line of the classifier
+```
+
+**See what the model predicts**
+
+```{r predictions}
+# make predictions using the model previously created and the data 10 attribute columns
+pred <- predict(model,data[,1:10])
+pred
+```
+
+**See what fraction of the model’s predictions match the actual classification**
+
+```{r accuracy}
+# accuracy = correct predictions / total number of predictions
+sum(pred == data[,11]) / nrow(data)
+```
+
+
+**Show the equation of your classifier and how well it classifies the data points in the full data set**
+
+Since the general equation of the SVM classifier is *a~1~x~1~ + a~2~x~2~ + ... + a~0~ = 0*, then the equation for my classifier is:
+
+```
+-0.003998150A1 - 0.0029287052A2 + 0.004080421A3 + 0.051036152A8 + 0.889321257A9 - 0.064669507A10 
++ 0.052625776A11 - 0.001743936A12 - 0.014767170A14 + 0.107170370A15 + 0.06111441 = 0
+```
+Note that if a variable's coefficient is near zero, it is likely not very relevant for classification.
+
+#### Try other (nonlinear) kernels as well
+
+```{r test kernels}
+
+# create a vector of kernels to try
+kernels = c("vanilladot"
+            , "polydot"
+            , "besseldot"
+            , "rbfdot"
+            , "tanhdot"
+            , "laplacedot"
+            , "besseldot"
+            , "anovadot"
+            , "splinedot")
+
+# empty vector to store accuracy for each kernel
+kaccuracy <- vector()                       
+
+# larger c -> smaller margin, fewer misclassifications. smaller c -> larger margin, more misclassifications.
+for (i in 1:length(kernels)) { 
+  model <- ksvm(as.matrix(data[,1:10])
+                , as.factor(data[,11])
+                , type='C-svc'
+                , kernel=kernels[[i]]       # loop through each kernel in kernels
+                , C=which.max(accuracy)     # select best performing c value
+                , scaled=TRUE
+                , kpar = list())            # hide the "setting default parameters" message
+  
+  kpreds <- predict(model,data[,1:10])                
+  kacc <- sum(kpreds == data[,11]) / nrow(data) 
+  
+  kaccuracy <- c(kaccuracy, kacc)
+}
+                  
+kaccuracy                     # vector of accuracies
+
+max(kaccuracy)                # the highest accuracy
+kernels[which.max(kaccuracy)] # the kernel with the highest accuracy
+
+min(kaccuracy)                # the worst accuracy
+kernels[which.min(kaccuracy)] # the kernel with the worst accuracy
+
+```
+
+After testing several models using different kernels, it looks like some non-linear kernels performed better than vanilladot. Therefore, a non-linear approach to this problem using something like laplacedot, rbfdot, or splinedot would likely be more effective than the linear approach of vanilladot.
+
+#### Using the k-nearest-neighbors classification function kknn contained in the R kknn package, suggest a good value of k, and show how well it classifies that data points in the full data set.  Don’t forget to scale the data (scale=TRUE in kknn)
+
+
+```{r knn}
+# 654 data points in data set
+max_k <- ceiling(sqrt(nrow(data))) # calculate the max k value as the square root of the number of data points, rounded up
+accuracy_knn <- vector()           # empty vector to store accuracy for each model with k = K
+preds_knn <- rep(0,nrow(data))     # vector of zeroes to store the predictions for each data point and K value
+
+for (K in 1:max_k) {                          # iterate through all possible k values between 1 and max_k
+  for (i in 1:nrow(data)){                    # iterate through each data point in the data set to make a prediction
+    knn_model <- kknn(formula=data[-i,11]~.   # the ~. connects the response variable to all the other columns
+                     , train=data[-i, 1:10]   # train on predictors for all but the ith data point
+                     , test=data[i,]          # test on all of the data including i
+                     , kernel='rectangular'
+                     , k=K
+                     , scale=TRUE)
+    
+    preds_knn[i] <- round(fitted(knn_model))  # kknn preds are continuous, so round to get preds to 0 or 1
+    accuracy <- sum(preds_knn == data[,11]) / nrow(data) # accurately predicted points / all points
+  }
+  accuracy_knn <- c(accuracy_knn, accuracy) # store accuracy in vector for each K
+}
+
+accuracy_knn
+max(accuracy_knn)
+which.max(accuracy_knn)
+```
+
+It looks like the most effective K value for KNN classifying of this data set is K = 22, with an overall accuracy of about 85%!
