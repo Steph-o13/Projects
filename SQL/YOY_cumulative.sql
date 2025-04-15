@@ -1,192 +1,289 @@
-%sql
--- Compare the current YTD with previous year's YTD, joined on the fiscal calendar (fiscal week + fiscal day of week) (ROLLING)
+-- GCC YOY, MOM player level
 
--- dayofweek():
--- - Sunday = 1 
--- - Monday = 2 
--- - ...
--- - Saturday = 7
+with raw_data as (
+  select 
+      d.SetupCasinoID as CasinoID
+      , p.PlayerID
+      , l.LoyaltyCardLevel as Tier
+      , l.IsCurrent
+      , date_part('year', cast(p.GamingDate as date)) as TimePeriod
 
+      -- host status
+      , case when h.PlayerID is not null then 1 else 0 end as Hosted
 
-with YTD_fiscal_calendar_mapping as (
-    select 
-        row_number() over (order by post.GamingDate) as DayNum  -- mapping ID to connect the current date with the same fiscal day of previous year
-        , post.GamingDate as cy_GamingDate
-        , prev.GamingDate as py_GamingDate 
-
-        , date_part('year', post.GamingDate) as cy_Year
-        , date_part('year', prev.GamingDate) as py_Year
-
-        , date_part('quarter', post.GamingDate) as cy_Quarter
-        , date_part('quarter', prev.GamingDate) as py_Quarter
-
-        , date_part('month', post.GamingDate) as cy_Month
-        , date_part('month', prev.GamingDate) as py_Month
-
-        , dayofweek(post.GamingDate) as cy_DayOfWeek
-        , dayofweek(post.GamingDate) as py_DayOfWeek
-
-    from polaris_scratchpad.gaming_marketing.x_ref_fiscal_calendar post
-    left join polaris_scratchpad.gaming_marketing.x_ref_fiscal_calendar prev
-        on post.FiscalYear = prev.FiscalYear+1                                          -- current year = previous year + 1
-        and post.FiscalWeek = prev.FiscalWeek                                           -- current fiscal week = previous year's fiscal week
-        and dayofweek(post.GamingDate) = dayofweek(prev.GamingDate)                     -- current fiscal day of week = previous year's fiscal week
-    where date_part('year', post.GamingDate) = date_part('year', current_date())        -- where post.GamingDate is in the current year
-)
-
--- calculate the daily total coinin, aggregated by game type, for the current year
-, cy_daily_data as (
-  select distinct
-      p.CasinoID
-      , m.DayNum
-      , m.cy_Year
-      , m.cy_Quarter 
-      , m.cy_Month
       , cast(p.GamingDate as date)
+      , p.TotalVisit
 
       -- coin in / table drop
-      , aggie.GameType 
-      , aggie.CoinIn 
+      , p.SlotCoinInInt100::int
+      , p.TableBetAmountInt100::int
+      
+      -- GrossTheoWin
+      , p.SlotTheoWinWithFreeplayInt100
+      , p.TableTheoWinwithPromoCreditInt100
 
-  from YTD_fiscal_calendar_mapping m 
-  left join prod_core.qcids.fact_playerday p
-      on m.CY_GamingDate = cast(p.GamingDate as date) -- only include dates in the current year
-  left join prod_core.qcids.dim_player_scd d
+      -- GrossActualWin
+      , p.SlotActualWinwithFreeplayInt100
+      , p.TableActualWinwithPromoCreditInt100
+
+      -- Freeplay
+      , p.SlotFreeplayInt100 
+      , p.TablePromoCreditInt100
+
+      -- NetTheoWin
+      , p.SlotTheoWinNetFreeplayInt100
+      , p.TableTheoWinNetPromoCreditInt100
+
+      -- NetActualWin
+      , p.SlotActualWinNetFreeplayInt100
+      , p.TableActualWinNetPromoCreditInt100
+
+  from prod_core.qcids.fact_playerday p
+  join prod_core.qcids.dim_player_scd d
       on d.PlayerID = p.PlayerID
-  left join (
-            select                                    -- slot-only
-                CasinoID 
-                , cast(GamingDate as date) 
-                , 'slot' as GameType
-                , sum(SlotCoinInInt100::int)*.01 as CoinIn
-            from prod_core.qcids.fact_playerday
-            where SlotVisit = 1
-            group by CasinoID, GamingDate
+  join prod_core.qcids.dim_playerloyalty_scd l
+      on d.PlayerID = l.PlayerID
+  left join (select e.*, d.PlayerID 
+            from prod_core.qcids.dim_playerhost_SCD d
+            left join prod_core.qcids.Dim_host_scd e 
+              on d.HostID = e.HostID
+            where d.IsCurrent = 1 and e.IsCurrent = 1) h
+      on p.PlayerID = h.PlayerID
 
-            union all 
-
-            select                                    -- table only
-                CasinoID 
-                , cast(GamingDate as date) 
-                , 'table' as GameType
-                , sum(TableBetAmountInt100)*.01 as CoinIn
-            from prod_core.qcids.fact_playerday
-            where TableVisit = 1
-            group by CasinoID, GamingDate
-
-            ) aggie 
-      on p.CasinoID = aggie.CasinoID and cast(p.GamingDate as date) = cast(aggie.GamingDate as date)
- 
   where p.TotalVisit = 1             -- where player has played  
+      and d.SetUpCasinoID = 'GCC'
       and d.IsCurrent = 1            -- with most current banned status
       and d.IsBanned = 0             -- not banned
+      and l.IsCurrent = 1            -- their current loyalty level
+      and ((cast(GamingDate as date) >= '2024-02-01' and cast(GamingDate as date) <= '2024-03-10') or (cast(GamingDate as date) >= '2025-02-01' and cast(GamingDate as date) <= '2025-03-09'))  -- Feb-March 2024 + Feb-March 2025
 )
 
--- calculate the daily total coinin, aggregated by game type, for the previous year
-, py_daily_data as (
-  select distinct
-      p.CasinoID
-      , m.DayNum
-      , m.cy_Year
-      , m.cy_Quarter 
-      , m.cy_Month
-      , cast(p.GamingDate as date)
+-- aggregate & segment players for 2024 time period
+, first_aggie as (
+  select
+      r.PlayerID
+      , r.TimePeriod
+      , r.Tier
+      , r.Hosted
 
-      -- coin in / table drop
-      , aggie.GameType 
-      , aggie.CoinIn 
+      , sum(r.TotalVisit) as NumVisits
 
-  from YTD_fiscal_calendar_mapping m 
-  left join prod_core.qcids.fact_playerday p
-      on m.PY_GamingDate = cast(p.GamingDate as date)     -- only include dates corresponding to the current quarter in the previous year
-  left join prod_core.qcids.dim_player_scd d
-      on d.PlayerID = p.PlayerID
-  left join ( 
-            select                                        -- slot only
-                CasinoID 
-                , cast(GamingDate as date) 
-                , 'slot' as GameType
-                , sum(SlotCoinInInt100::int)*.01 as CoinIn
-            from prod_core.qcids.fact_playerday
-            where SlotVisit = 1
-            group by CasinoID, GamingDate
+      -- slot metrics
+      , sum(r.SlotCoinInInt100)*.01 as CoinIn
+      , sum(r.SlotTheoWinWithFreeplayInt100)*.01 as SlotsGrossTheo
+      , sum(r.SlotActualWinwithFreeplayInt100)*.01 as SlotsGrossActual
+      , sum(r.SlotFreeplayInt100)*.01 as SlotsFreeplay
+      , sum(r.SlotTheoWinNetFreeplayInt100)*.01 as SlotsNetTheo
+      , sum(r.SlotActualWinNetFreeplayInt100)*.01 as SlotsNetActual
 
-            union all 
+      -- table metrics metrics calculation
+      , sum(r.TableBetAmountInt100)*.01 as TableDrop
+      , sum(r.TableTheoWinwithPromoCreditInt100)*.01 as TableGrossTheo
+      , sum(r.TableActualWinwithPromoCreditInt100)*.01 as TableGrossActual
+      , sum(r.TablePromoCreditInt100)*.01 as TableFreeplay
+      , sum(r.TableTheoWinNetPromoCreditInt100)*.01 as TableNetTheo
+      , sum(r.TableActualWinNetPromoCreditInt100)*.01 as TableNetActual
 
-            select                                        -- table only
-                CasinoID 
-                , cast(GamingDate as date) 
-                , 'table' as GameType
-                , sum(TableBetAmountInt100)*.01 as CoinIn
-            from prod_core.qcids.fact_playerday
-            where TableVisit = 1
-            group by CasinoID, GamingDate
+      -- combined metrics calculation
+      , sum(r.SlotCoinInInt100 + r.TableBetAmountInt100)*.01 as TotalCoinIn
+      , sum(r.SlotTheoWinWithFreeplayInt100 + r.TableTheoWinwithPromoCreditInt100)*.01 as GrossTheo
+      , sum(r.SlotActualWinwithFreeplayInt100 + r.TableActualWinwithPromoCreditInt100)*.01 as GrossActual
+      , sum(r.SlotFreeplayInt100 + r.TablePromoCreditInt100)*.01 as Freeplay
+      , sum(r.SlotTheoWinNetFreeplayInt100 + r.TableTheoWinNetPromoCreditInt100)*.01 as NetTheo
+      , sum(r.SlotActualWinNetFreeplayInt100 + r.TableActualWinNetPromoCreditInt100)*.01 as NetActual
 
-            ) aggie 
-      on p.CasinoID = aggie.CasinoID and cast(p.GamingDate as date) = cast(aggie.GamingDate as date)
- 
-  where p.TotalVisit = 1             -- where player has played  
-      and d.IsCurrent = 1            -- with most current banned status
-      and d.IsBanned = 0             -- not banned
+      -- GrossADW calculation
+      , case when (GrossTheo/NumVisits) > ((GrossActual/NumVisits)*0.4) then round((GrossTheo/NumVisits),2)
+             else round(((GrossActual/NumVisits)*0.4),2) end
+             as GrossADW
+
+      -- GrossADW segmentation
+      , case													
+          when GrossADW >= 2000                     then '2000+'													
+          when GrossADW >= 1500 and GrossADW < 2000 then '1500 - 1999'													
+          when GrossADW >= 1200 and GrossADW < 1500 then '1200 - 1499'													
+          when GrossADW >=  900 and GrossADW < 1200 then  '900 - 1199'													
+          when GrossADW >=  700 and GrossADW <  900 then  '700 - 899'													
+          when GrossADW >=  575 and GrossADW <  700 then  '575 - 699'													
+          when GrossADW >=  475 and GrossADW <  575 then  '475 - 574'													
+          when GrossADW >=  400 and GrossADW <  475 then  '400 - 474'													
+          when GrossADW >=  350 and GrossADW <  400 then  '350 - 399'													
+          when GrossADW >=  300 and GrossADW <  350 then  '300 - 349'													
+          when GrossADW >=  260 and GrossADW <  300 then  '260 - 299'													
+          when GrossADW >=  230 and GrossADW <  260 then  '230 - 259'													
+          when GrossADW >=  200 and GrossADW <  230 then  '200 - 229'													
+          when GrossADW >=  175 and GrossADW <  200 then  '175 - 199'													
+          when GrossADW >=  150 and GrossADW <  175 then  '150 - 174'													
+          when GrossADW >=  125 and GrossADW <  150 then  '125 - 149'													
+          when GrossADW >=  100 and GrossADW <  125 then  '100 - 124'													
+          when GrossADW >=   75 and GrossADW <  100 then   '75 - 99'													
+          when GrossADW >=   50 and GrossADW <   75 then   '50 - 74'													
+          when GrossADW >=   25 and GrossADW <   50 then   '25 - 49'													
+          else 'Below 25'													
+      end as Segment	
+      
+      , case													
+          when Segment = '2000+'       then 1												
+          when Segment = '1500 - 1999' then 2												
+          when Segment = '1200 - 1499' then 3												
+          when Segment = '900 - 1199'	 then 4											
+          when Segment = '700 - 899'   then 5												
+          when Segment = '575 - 699'   then 6												
+          when Segment = '475 - 574'   then 7												
+          when Segment = '400 - 474'   then 8													
+          when Segment = '350 - 399'   then 9												
+          when Segment = '300 - 349'   then 10												
+          when Segment = '260 - 299'   then 11													
+          when Segment = '230 - 259'   then 12											
+          when Segment = '200 - 229'   then 13											
+          when Segment = '175 - 199'   then 14												
+          when Segment = '150 - 174'   then 15											
+          when Segment = '125 - 149'   then 16												
+          when Segment = '100 - 124'   then 17											
+          when Segment = '75 - 99'	   then 18												
+          when Segment = '50 - 74'     then 19									
+          when Segment = '25 - 49'	   then 20												
+          when Segment = 'Below 25'	   then 21											
+      end as SegmentNumber
+      	
+      
+  from raw_data r
+  where cast(GamingDate as date) >= '2024-02-01' 
+    and cast(GamingDate as date) < '2024-04-01'
+  group by r.PlayerID, TimePeriod, r.Tier, r.Hosted
 )
 
--- calculate the cumulative YTD metrics for both current and previous years
-, cumulative as (
-    select 
-        c.CasinoID
-        , c.GameType
-        , c.GamingDate as cy_GamingDate
-        , p.GamingDate as py_GamingDate
-        
-        , c.cy_Year
-        , c.cy_Quarter 
-        , c.cy_Month
+-- aggregate & segment players for 2025 time period
+, second_aggie as (
+  select
+      r.PlayerID
+      , r.TimePeriod
+      , r.Tier
+      , r.Hosted
 
+      , sum(r.TotalVisit) as NumVisits
 
-        -- daily metrics 
-        , c.CoinIn as cy_CoinIn
-        , p.CoinIn as py_CoinIn
+      -- slot metrics
+      , sum(r.SlotCoinInInt100)*.01 as CoinIn
+      , sum(r.SlotTheoWinWithFreeplayInt100)*.01 as SlotsGrossTheo
+      , sum(r.SlotActualWinwithFreeplayInt100)*.01 as SlotsGrossActual
+      , sum(r.SlotFreeplayInt100)*.01 as SlotsFreeplay
+      , sum(r.SlotTheoWinNetFreeplayInt100)*.01 as SlotsNetTheo
+      , sum(r.SlotActualWinNetFreeplayInt100)*.01 as SlotsNetActual
 
-        -- cumulative YTD metrics
-        , sum(c.CoinIn) over (partition by c.CasinoID, c.GameType, c.cy_Year order by c.GamingDate) as cy_cmlv_CoinIn_YTD 
-        , sum(p.CoinIn) over (partition by c.CasinoID, c.GameType, c.cy_Year order by p.GamingDate) as py_cmlv_CoinIn_YTD
+      -- table metrics metrics calculation
+      , sum(r.TableBetAmountInt100)*.01 as TableDrop
+      , sum(r.TableTheoWinwithPromoCreditInt100)*.01 as TableGrossTheo
+      , sum(r.TableActualWinwithPromoCreditInt100)*.01 as TableGrossActual
+      , sum(r.TablePromoCreditInt100)*.01 as TableFreeplay
+      , sum(r.TableTheoWinNetPromoCreditInt100)*.01 as TableNetTheo
+      , sum(r.TableActualWinNetPromoCreditInt100)*.01 as TableNetActual
 
-        -- cumulative QTD metrics
-        , sum(c.CoinIn) over (partition by c.CasinoID, c.GameType, c.cy_Quarter order by c.GamingDate) as cy_cmlv_CoinIn_QTD
-        , sum(p.CoinIn) over (partition by c.CasinoID, c.GameType, c.cy_Quarter order by p.GamingDate) as py_cmlv_CoinIn_QTD
+      -- combined metrics calculation
+      , sum(r.SlotCoinInInt100 + r.TableBetAmountInt100)*.01 as TotalCoinIn
+      , sum(r.SlotTheoWinWithFreeplayInt100 + r.TableTheoWinwithPromoCreditInt100)*.01 as GrossTheo
+      , sum(r.SlotActualWinwithFreeplayInt100 + r.TableActualWinwithPromoCreditInt100)*.01 as GrossActual
+      , sum(r.SlotFreeplayInt100 + r.TablePromoCreditInt100)*.01 as Freeplay
+      , sum(r.SlotTheoWinNetFreeplayInt100 + r.TableTheoWinNetPromoCreditInt100)*.01 as NetTheo
+      , sum(r.SlotActualWinNetFreeplayInt100 + r.TableActualWinNetPromoCreditInt100)*.01 as NetActual
 
-        -- cumulative MTD metrics
-        , sum(c.CoinIn) over (partition by c.CasinoID, c.GameType, c.cy_Month order by c.GamingDate) as cy_cmlv_CoinIn_MTD
-        , sum(p.CoinIn) over (partition by c.CasinoID, c.GameType, c.cy_Month order by p.GamingDate) as py_cmlv_CoinIn_MTD
+      -- GrossADW calculation
+      , case when try_divide(GrossTheo,NumVisits) > (try_divide(GrossActual,NumVisits)*0.4) then round(try_divide(GrossTheo,NumVisits),2)
+             else round((try_divide(GrossActual,NumVisits)*0.4),2) end
+             as GrossADW
 
-    from cy_daily_data c 
-    join py_daily_data p 
-        on c.DayNum = p.DayNum and c.CasinoID = p.CasinoID and c.GameType = p.GameType
+      -- GrossADW segmentation
+      , case													
+          when GrossADW >= 2000                     then '2000+'													
+          when GrossADW >= 1500 and GrossADW < 2000 then '1500 - 1999'													
+          when GrossADW >= 1200 and GrossADW < 1500 then '1200 - 1499'													
+          when GrossADW >=  900 and GrossADW < 1200 then  '900 - 1199'													
+          when GrossADW >=  700 and GrossADW <  900 then  '700 - 899'													
+          when GrossADW >=  575 and GrossADW <  700 then  '575 - 699'													
+          when GrossADW >=  475 and GrossADW <  575 then  '475 - 574'													
+          when GrossADW >=  400 and GrossADW <  475 then  '400 - 474'													
+          when GrossADW >=  350 and GrossADW <  400 then  '350 - 399'													
+          when GrossADW >=  300 and GrossADW <  350 then  '300 - 349'													
+          when GrossADW >=  260 and GrossADW <  300 then  '260 - 299'													
+          when GrossADW >=  230 and GrossADW <  260 then  '230 - 259'													
+          when GrossADW >=  200 and GrossADW <  230 then  '200 - 229'													
+          when GrossADW >=  175 and GrossADW <  200 then  '175 - 199'													
+          when GrossADW >=  150 and GrossADW <  175 then  '150 - 174'													
+          when GrossADW >=  125 and GrossADW <  150 then  '125 - 149'													
+          when GrossADW >=  100 and GrossADW <  125 then  '100 - 124'													
+          when GrossADW >=   75 and GrossADW <  100 then   '75 - 99'													
+          when GrossADW >=   50 and GrossADW <   75 then   '50 - 74'													
+          when GrossADW >=   25 and GrossADW <   50 then   '25 - 49'													
+          else 'Below 25'													
+      end as Segment	
+      
+      , case													
+          when Segment = '2000+'       then 1												
+          when Segment = '1500 - 1999' then 2												
+          when Segment = '1200 - 1499' then 3												
+          when Segment = '900 - 1199'	 then 4											
+          when Segment = '700 - 899'   then 5												
+          when Segment = '575 - 699'   then 6												
+          when Segment = '475 - 574'   then 7												
+          when Segment = '400 - 474'   then 8													
+          when Segment = '350 - 399'   then 9												
+          when Segment = '300 - 349'   then 10												
+          when Segment = '260 - 299'   then 11													
+          when Segment = '230 - 259'   then 12											
+          when Segment = '200 - 229'   then 13											
+          when Segment = '175 - 199'   then 14												
+          when Segment = '150 - 174'   then 15											
+          when Segment = '125 - 149'   then 16												
+          when Segment = '100 - 124'   then 17											
+          when Segment = '75 - 99'	   then 18												
+          when Segment = '50 - 74'     then 19									
+          when Segment = '25 - 49'	   then 20												
+          when Segment = 'Below 25'	   then 21											
+      end as SegmentNumber
+      	
+      
+  from raw_data r
+  where cast(GamingDate as date) >= '2025-02-01' 
+    and cast(GamingDate as date) < '2025-04-01'
+  group by r.PlayerID, TimePeriod, r.Tier, r.Hosted
+)
+
+-- combine first and second aggies
+, combined as (
+  select * from first_aggie 
+  union all
+  select * from second_aggie
 )
 
 select 
-    CasinoID 
-    , GameType 
-    , cy_GamingDate
-    , py_GamingDate 
+     TimePeriod
+     , SegmentNumber
+     , count(PlayerID) as NumPlayers
 
-    
-    , cy_Quarter 
-    , cy_Month
+     -- slot metrics
+     , sum(CoinIn) as CoinIn
+     , sum(SlotsGrossTheo) as SlotsGrossTheo
+     , sum(SlotsGrossActual) as SlotsGrossActual
+     , sum(SlotsFreeplay) as SlotsFreeplay
+     , sum(SlotsNetTheo) as SlotsNetTheo
+     , sum(SlotsNetActual) as SlotsNetActual
 
-    , cy_CoinIn 
-    , py_CoinIn 
+     -- table metrics
+     , sum(TableDrop) as TableDrop
+     , sum(TableGrossTheo) as TableGrossTheo 
+     , sum(TableGrossActual) as TableGrossActual
+     , sum(TableFreeplay) as TableFreeplay
+     , sum(TableNetTheo) as TableNetTheo 
+     , sum(TableNetActual) as TableNetActual
 
-    , round(cy_cmlv_CoinIn_YTD, 2) as cy_cmlv_CoinIn_YTD
-    , round(py_cmlv_CoinIn_YTD, 2) as py_cmlv_CoinIn_YTD
+     -- total metrics
+     , sum(TotalCoinIn) as TotalBetAmount
+     , sum(GrossTheo) as GrossTheo
+     , sum(GrossActual) as GrossActual
+     , sum(Freeplay) as Freeplay
+     , sum(NetTheo) as NetTheo
+     , sum(NetActual) as NetActual 
 
-    , round(cy_cmlv_CoinIn_QTD, 2) as cy_cmlv_CoinIn_QTD
-    , round(py_cmlv_CoinIn_QTD, 2) as py_cmlv_CoinIn_QTD
-
-    , round(cy_cmlv_CoinIn_MTD, 2) as cy_cmlv_CoinIn_MTD
-    , round(py_cmlv_CoinIn_MTD, 2) as py_cmlv_CoinIn_MTD
-
-from cumulative 
- 
-order by cy_GamingDate, casinoID, GameType 
-
+from combined 
+group by 1,2 
+order by SegmentNumber asc, TimePeriod
