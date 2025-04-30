@@ -1,3 +1,5 @@
+
+-- YOY YTD MTD QTD
 -- Compare the current YTD with previous year's YTD, joined on the fiscal calendar (fiscal week + fiscal day of week)
 
 -- dayofweek():
@@ -8,7 +10,6 @@
 
 -- get all dates from 2024 to now, to ensure days with zero play aren't excluded from gamingdate
 WITH CTE_Dates AS ( -- FLG and HAM don't have table
-                        -- limit to dates before current date so we don't end up with a bunch of zeroes for future dates in the final output
         SELECT 'FLG' CasinoID, 'slot' GameType, DayOfWeek(GamingDate) DayOfWeek, * FROM polaris_scratchpad.gaming_marketing.x_ref_fiscal_calendar dt WHERE GamingDate >= '2024-01-01' and GamingDate <= current_date()
         UNION ALL
         SELECT 'GCC' CasinoID, 'slot' GameType, DayOfWeek(GamingDate) DayOfWeek, * FROM polaris_scratchpad.gaming_marketing.x_ref_fiscal_calendar dt WHERE GamingDate >= '2024-01-01' and GamingDate <= current_date()
@@ -30,7 +31,15 @@ WITH CTE_Dates AS ( -- FLG and HAM don't have table
         SELECT 'WIC' CasinoID, 'table' GameType, DayOfWeek(GamingDate) DayOfWeek, * FROM polaris_scratchpad.gaming_marketing.x_ref_fiscal_calendar dt WHERE GamingDate >= '2024-01-01' and GamingDate <= current_date()
 )
 
--- calculate the daily total coinin, aggregated on GameType, Casino, FiscalYear
+-- remove any leap days
+, leap_aggie (
+    select
+      case when day(GamingDate) = 29 and month(GamingDate) = 2 then 1 else 0 end as IsLeapDay
+        , *
+    from cte_dates
+)
+
+-- calculate the daily total coinin, aggregated on GameType, Year
 , daily_data as (
   select distinct
       m.CasinoID
@@ -47,7 +56,7 @@ WITH CTE_Dates AS ( -- FLG and HAM don't have table
       , coalesce(aggie.CoinIn,0) as CoinIn
       , coalesce(aggie.NetWin,0) as NetWin
 
-  from CTE_Dates m 
+  from leap_aggie m 
   left join ( 
             select                                        -- slot only
                 CasinoID 
@@ -81,68 +90,43 @@ WITH CTE_Dates AS ( -- FLG and HAM don't have table
       on m.CasinoID = aggie.CasinoID 
         and m.GamingDate = cast(aggie.GamingDate as date) 
         and m.GameType = aggie.GameType
-)
-
-
-, cumulative as (
-    select 
-        *
-        -- cumulative YTD metrics
-        , sum(CoinIn) over (partition by CasinoID, GameType, FiscalYear order by GamingDate) as cmlv_CoinIn_YTD 
-        , sum(NetWin) over (partition by CasinoID, GameType, FiscalYear order by GamingDate) as cmlv_NetWin_YTD 
-
-        -- cumulative QTD metrics
-        , sum(CoinIn) over (partition by CasinoID, GameType, CalQuarter order by GamingDate) as cmlv_CoinIn_QTD
-        , sum(NetWin) over (partition by CasinoID, GameType, CalQuarter order by GamingDate) as cmlv_NetWin_QTD
-
-        -- cumulative MTD metrics
-        , sum(CoinIn) over (partition by CasinoID, GameType, CalMonth order by GamingDate) as cmlv_CoinIn_MTD
-        , sum(NetWin) over (partition by CasinoID, GameType, CalMonth order by GamingDate) as cmlv_NetWin_MTD
-
-    from daily_data
+    where m.IsLeapDay <> 1 -- remove leap days
+        and m.GamingDate <= dateadd(day, -2, current_date()) -- don't include the delayed data not yet in databricks
 )
 
 select 
     cy.CasinoID 
     , cy.GameType 
 
-    , cy.CalQuarter 
-    , cy.CalMonth
-
-    , cy.GamingDate  as cy_GamingDate
+    , cy.GamingDate as cy_GamingDate
     , py.GamingDate as py_GamingDate
 
     -- CoinIn
-        -- current year
     , cy.CoinIn as cy_CoinIn
-    , round(cy.cmlv_CoinIn_YTD, 2) as cy_cmlv_CoinIn_YTD   
-    , round(cy.cmlv_CoinIn_QTD, 2) as cy_cmlv_CoinIn_QTD 
-    , round(cy.cmlv_CoinIn_MTD, 2) as cy_cmlv_CoinIn_MTD
-        
-        -- previous year
+    , round(sum(cy.CoinIn) over (partition by cy.CasinoID, cy.GameType, cy.FiscalYear order by cy.GamingDate), 2) as cy_cmlv_CoinIn_YTD   
+    , round(sum(cy.CoinIn) over (partition by cy.CasinoID, cy.GameType, cy.FiscalYear, cy.CalQuarter order by cy.GamingDate), 2) as cy_cmlv_CoinIn_QTD 
+    , round(sum(cy.CoinIn) over (partition by cy.CasinoID, cy.GameType, cy.FiscalYear, cy.CalMonth order by cy.GamingDate), 2) as cy_cmlv_CoinIn_MTD
+
     , py.CoinIn as py_CoinIn
-    , round(py.cmlv_CoinIn_YTD, 2) as py_cmlv_CoinIn_YTD
-    , round(py.cmlv_CoinIn_QTD, 2) as py_cmlv_CoinIn_QTD
-    , round(py.cmlv_CoinIn_MTD, 2) as py_cmlv_CoinIn_MTD
+    , round(sum(py.CoinIn) over (partition by py.CasinoID, py.GameType, py.FiscalYear order by py.GamingDate), 2) as py_cmlv_CoinIn_YTD   
+    , round(sum(py.CoinIn) over (partition by py.CasinoID, py.GameType, py.FiscalYear, py.CalQuarter order by py.GamingDate), 2) as py_cmlv_CoinIn_QTD 
+    , round(sum(py.CoinIn) over (partition by py.CasinoID, py.GameType, py.FiscalYear, py.CalMonth order by py.GamingDate), 2) as py_cmlv_CoinIn_MTD
 
     -- NetWin
-        -- current year
     , cy.NetWin as cy_NetWin
-    , round(cy.cmlv_NetWin_YTD, 2) as cy_cmlv_NetWin_YTD
-    , round(cy.cmlv_NetWin_QTD, 2) as cy_cmlv_NetWin_QTD
-    , round(cy.cmlv_NetWin_MTD, 2) as cy_cmlv_NetWin_MTD
+    , round(sum(cy.NetWin) over (partition by cy.CasinoID, cy.GameType, cy.FiscalYear order by cy.GamingDate), 2) as cy_cmlv_NetWin_YTD
+    , round(sum(cy.NetWin) over (partition by cy.CasinoID, cy.GameType, cy.FiscalYear, cy.CalQuarter order by cy.GamingDate), 2) as cy_cmlv_NetWin_QTD
+    , round(sum(cy.NetWin) over (partition by cy.CasinoID, cy.GameType, cy.FiscalYear, cy.CalMonth order by cy.GamingDate), 2) as cy_cmlv_NetWin_MTD
 
-        -- previous year
     , py.NetWin as py_NetWin
-    , round(py.cmlv_NetWin_YTD, 2) as py_cmlv_NetWin_YTD
-    , round(py.cmlv_NetWin_QTD, 2) as py_cmlv_NetWin_QTD
-    , round(py.cmlv_NetWin_MTD, 2) as py_cmlv_NetWin_MTD
+    , round(sum(py.NetWin) over (partition by py.CasinoID, py.GameType, py.FiscalYear order by py.GamingDate), 2) as py_cmlv_NetWin_YTD
+    , round(sum(py.NetWin) over (partition by py.CasinoID, py.GameType, py.FiscalYear, py.CalQuarter order by py.GamingDate), 2) as py_cmlv_NetWin_QTD
+    , round(sum(py.NetWin) over (partition by py.CasinoID, py.GameType, py.FiscalYear, py.CalMonth order by py.GamingDate), 2) as py_cmlv_NetWin_MTD
 
-from (select * from cumulative where FiscalYear = datepart('year', dateadd(DAY, -2, current_date()))) cy
-left join (select * from cumulative where FiscalYear = datepart('year', dateadd(DAY, -367, current_date()))) py
+from (select * from daily_data where FiscalYear = datepart('year', dateadd(DAY, -2, current_date()))) cy  -- where fiscal year = current year
+left join (select * from daily_data where FiscalYear = datepart('year', dateadd(DAY, -367, current_date()))) py -- where fiscal year = previous year
     on cy.CasinoID = py.CasinoID 
     and cy.GameType = py.GameType 
-    and cy.FiscalYear = (py.FiscalYear + 1) 
-    and cy.FiscalWeek = py.FiscalWeek 
-    and cy.DayOfWeek = py.DayOfWeek
-order by cy_GamingDate, cy.casinoID, cy.GameType
+    and cy.GamingDate = dateadd(year, 1, py.GamingDate)
+order by cy.casinoID, cy.CasinoID, cy.GameType
+
